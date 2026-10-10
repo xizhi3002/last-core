@@ -1,0 +1,15 @@
+.godot/
+build/
+server/__pycache__/
+*.tmp
+*.bak
+.env
+steam_appid.txt
+
+export_templates/
+feature_profiles/
+script_templates/
+text_editor_themes/
+.env.*
+!.env.example
+*.log
