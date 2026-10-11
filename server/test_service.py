@@ -1,3 +1,4 @@
+# 服务端单元测试：模拟外部验证，检查身份、幂等结算、并列排名和拒绝离线成绩。
 import importlib.util
 import json
 from pathlib import Path

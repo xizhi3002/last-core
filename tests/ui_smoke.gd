@@ -1,10 +1,14 @@
 extends SceneTree
+# 界面流程冒烟测试：实际创建主场景并检查页面和出征操作。
 var game
 var failures: Array = []
+# 延迟执行测试，使场景树和预加载资源先完成初始化。
 func _init(): run.call_deferred()
+# 累积检查次数并记录失败，便于一次看到多个问题。
 func check(ok: bool,message: String):
 	if not ok: failures.append(message); push_error(message)
 
+# 执行本文件的验证流程，输出结果后结束进程。
 func run():
 	game = load("res://main.tscn").instantiate()
 	root.add_child(game)

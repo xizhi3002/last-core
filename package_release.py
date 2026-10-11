@@ -1,3 +1,5 @@
+# 本地打包工具：收集已导出的程序、报告和截图，生成 ZIP 与校验值。
+# 源码打包使用目录遍历；含 .git 或本地私密文件的工作区应改用 git archive 导出已跟踪文件。
 """Build reproducible local deliverables from an already-tested Godot export."""
 from pathlib import Path
 import hashlib

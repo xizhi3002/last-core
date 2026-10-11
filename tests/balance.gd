@@ -1,8 +1,11 @@
 extends SceneTree
+# 基础构筑数值测试：遍历地图和配置，记录推进结果；不是最终平衡验收。
 const Sim = preload("res://scripts/simulation.gd")
 var rows: Array = []
+# 延迟执行测试，使场景树和预加载资源先完成初始化。
 func _init(): run.call_deferred()
 
+# 执行本文件的验证流程，输出结果后结束进程。
 func run():
 	for map_id in 5:
 		for build in ["ring","piercing","control","mixed"]:

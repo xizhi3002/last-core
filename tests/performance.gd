@@ -1,9 +1,12 @@
 extends SceneTree
+# 最大地图短时性能采样：记录帧率、内存和敌人数量，不替代长时间压力测试。
 var game
 var samples: Array = []
 var started = 0
 var last = 0
+# 延迟执行测试，使场景树和预加载资源先完成初始化。
 func _init(): run.call_deferred()
+# 执行本文件的验证流程，输出结果后结束进程。
 func run():
 	game = load("res://main.tscn").instantiate()
 	root.add_child(game)

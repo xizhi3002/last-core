@@ -1,4 +1,6 @@
 extends Control
+# 棋盘表现和鼠标交互层：把地格坐标转换为像素坐标。
+# 战斗结果由 sim 决定，本脚本负责绘图和发送输入信号。
 signal cell_clicked(cell: Vector2i, button: int)
 signal selection_changed(cells: Array)
 var sim
@@ -27,6 +29,7 @@ var invalid_cell = Vector2i(-1,-1)
 var invalid_time = 0.0
 const COLORS = [Color("69ddcb"),Color("f4bb71"),Color("b4a1ff"),Color("f08da1")]
 
+# 建立独立地形绘制层和棋盘底纹，避免把每个地格都建成节点。
 func _ready():
 	clip_contents = true
 	mouse_filter = Control.MOUSE_FILTER_STOP
@@ -43,6 +46,7 @@ func _ready():
 	floor_texture = ImageTexture.create_from_image(img)
 	terrain.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 
+# 更新视觉动画和坐标变换；视图变化时才请求静态地形重绘。
 func _process(delta):
 	pulse += delta
 	invalid_time = maxf(0,invalid_time-delta)
@@ -54,27 +58,33 @@ func _process(delta):
 		terrain.queue_redraw()
 	queue_redraw()
 
+# 重置缩放和平移，使棋盘回到居中视图。
 func home():
 	zoom = 1.0
 	pan = Vector2.ZERO
 
+# 放大并平移到指定入口，方便查看远端防线。
 func jump_to(index: int):
 	if sim == null: return
 	zoom = maxf(zoom,2.0)
 	update_transform()
 	pan = (Vector2(sim.s.width,sim.s.height)*0.5-Vector2(sim.entrances()[index])-Vector2.ONE*0.5)*cell_size
 
+# 根据控件尺寸、缩放和拖动距离计算地格像素大小及偏移。
 func update_transform():
 	if sim == null or sim.s.is_empty(): return
 	cell_size = minf((size.x-90)/sim.s.width,(size.y-70)/sim.s.height)*zoom
 	offset = (size-Vector2(sim.s.width,sim.s.height)*cell_size)*0.5+pan
 
+# 把模拟器的棋盘坐标换算成控件内像素坐标。
 func point(p: Vector2) -> Vector2:
 	return offset+p*cell_size
 
+# 把控件内鼠标位置换算为地格坐标，向下取整避免选错格。
 func cell_at(p: Vector2) -> Vector2i:
 	return Vector2i(((p-offset)/cell_size).floor())
 
+# 处理拖动、以鼠标为中心缩放、框选、小地图跳转及地格点击。
 func _gui_input(event):
 	if sim == null: return
 	if event is InputEventMouseMotion:
@@ -84,6 +94,7 @@ func _gui_input(event):
 		if event.button_index == MOUSE_BUTTON_MIDDLE:
 			dragging = event.pressed
 		elif event.pressed and event.button_index in [MOUSE_BUTTON_WHEEL_UP,MOUSE_BUTTON_WHEEL_DOWN]:
+			# 缩放后补偿平移，让鼠标下的棋盘位置保持不动。
 			var before = (event.position-offset)/cell_size
 			zoom = clampf(zoom*(1.15 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1/1.15),0.65,5.0)
 			update_transform()
@@ -107,9 +118,11 @@ func _gui_input(event):
 				pan = (Vector2(0.5,0.5)-norm)*Vector2(sim.s.width,sim.s.height)*cell_size
 			else: cell_clicked.emit(cell_at(event.position),event.button_index)
 
+# 返回右下角小地图在当前控件中的矩形区域。
 func minimap_rect() -> Rect2:
 	return Rect2(size.x-160,size.y-115,140,90)
 
+# 绘制底纹、网格、岩体和特殊地形，供独立地形层调用。
 func draw_terrain(canvas: Control):
 	canvas.draw_rect(Rect2(Vector2.ZERO,size),Color("0a131e"))
 	if sim == null or sim.s.is_empty(): return
@@ -143,6 +156,7 @@ func draw_terrain(canvas: Control):
 			canvas.draw_rect(Rect2(pos+Vector2.ONE*cell_size*0.18,Vector2.ONE*cell_size*0.64),Color("7baca8"),false,1)
 		else: canvas.draw_line(pos+Vector2(cell_size*0.3,0),pos+Vector2(cell_size*0.65,cell_size),Color("b496c6"),1)
 
+# 绘制路线、建筑、敌人、攻击表现、选中状态和小地图。
 func _draw():
 	if sim == null or sim.s.is_empty(): return
 	update_transform()
@@ -236,6 +250,7 @@ func _draw():
 	var view = Rect2((-offset/cell_size)*ratio+mini.position,size/cell_size*ratio).intersection(mini)
 	draw_rect(view,Color("70928f"),false,1)
 
+# 用六边形顶点绘制核心的填充和边框。
 func hexagon(pos: Vector2,r: float,line: Color,fill: Color):
 	var points = PackedVector2Array()
 	for i in 6: points.append(pos+Vector2.from_angle(PI/3*i-PI/6)*r)
@@ -243,6 +258,7 @@ func hexagon(pos: Vector2,r: float,line: Color,fill: Color):
 	points.append(points[0])
 	draw_polyline(points,line,1.8,true)
 
+# 根据蓝图类型与朝向绘制建筑，不参与命中判定。
 func draw_building(pos: Vector2,unit: float,id: String,angle: float):
 	var c = Color(sim.defs[id].color)
 	var r = unit*0.32

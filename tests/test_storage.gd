@@ -1,7 +1,10 @@
 extends SceneTree
+# 磁盘存档测试：使用 build 下的独立文件检查结算、重复领取和备份恢复。
 const Storage = preload("res://scripts/storage.gd")
 const Sim = preload("res://scripts/simulation.gd")
+# 延迟执行测试，使场景树和预加载资源先完成初始化。
 func _init(): run.call_deferred()
+# 执行本文件的验证流程，输出结果后结束进程。
 func run():
 	var st = Storage.new()
 	st.path = "res://build/transaction-test.json"

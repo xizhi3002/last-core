@@ -1,22 +1,27 @@
 extends SceneTree
+# 核心规则回归测试：覆盖寻路、建造、成长、回放和连续波次等行为。
 const Sim = preload("res://scripts/simulation.gd")
 var checks = 0
 var failures: Array = []
 
+# 累积检查次数并记录失败，便于一次看到多个问题。
 func check(condition: bool,message: String):
 	checks += 1
 	if not condition:
 		failures.append(message)
 		push_error(message)
 
+# 延迟执行测试，使场景树和预加载资源先完成初始化。
 func _init():
 	run.call_deferred()
 
+# 创建固定种子与默认蓝图的模拟器，便于重复比较。
 func make_sim(map_id=0,map_seed=73):
 	var sim = Sim.new()
 	sim.new_run(map_id,map_seed,{"power":0},["rail","ember","mortar","arc","lance","frost"])
 	return sim
 
+# 执行本文件的验证流程，输出结果后结束进程。
 func run():
 	var started = Time.get_ticks_msec()
 	for map_id in 5:

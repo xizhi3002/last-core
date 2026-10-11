@@ -1,3 +1,4 @@
+# Windows 构建入口：指定 Godot 与导出模板路径，先跑核心测试再导出。
 param(
     [string]$Godot = 'D:\codex\tools\godot\Godot_v4.5.2-stable_win64_console.exe',
     [string]$Template = 'D:\codex\tools\godot\windows_release_x86_64.exe'

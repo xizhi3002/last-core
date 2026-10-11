@@ -1,12 +1,17 @@
 extends SceneTree
+# 无窗口回放验证入口：服务端提供初始配置，不接受客户端存档作为权威结果。
+# 该入口不独立验证初始配置签名；信任边界由调用它的服务端负责。
 ## The service supplies its own signed initial configuration; no client snapshots accepted.
 const Sim = preload("res://scripts/simulation.gd")
+# 延迟到场景树初始化之后再启动命令行回放。
 func _init(): run.call_deferred()
 
+# 输出机器可读的失败结果，并以非零退出码结束。
 func fail(reason: String):
 	print(JSON.stringify({"valid":false,"reason":reason}))
 	quit(1)
 
+# 读取服务端任务，用同一模拟器按 tick 重放合法命令并输出结算结果。
 func run():
 	var args = OS.get_cmdline_user_args()
 	if args.size()!=1: fail("expected job path"); return

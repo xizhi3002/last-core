@@ -1,11 +1,15 @@
 extends SceneTree
+# 界面截图工具：按预设流程打开页面，保存图片供人工检查布局。
 var game
+# 延迟执行测试，使场景树和预加载资源先完成初始化。
 func _init(): run.call_deferred()
+# 等待画面更新后将当前视口保存为图片。
 func snap(name: String):
 	await process_frame
 	await process_frame
 	await RenderingServer.frame_post_draw
 	root.get_texture().get_image().save_png("res://build/qa-"+name+".png")
+# 执行本文件的验证流程，输出结果后结束进程。
 func run():
 	game = load("res://main.tscn").instantiate()
 	root.add_child(game)

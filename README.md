@@ -52,6 +52,8 @@ Windows 游戏包可在 [Releases](https://github.com/xizhi3002/last-core/releas
 
 ## 开发与复现
 
+源码已补充中文注释。初学者建议先阅读 [中文源码导读](docs/源码导读.md)，再按入口、战斗模拟、棋盘绘制、存档的顺序查看脚本。
+
 引擎锁定 **Godot 4.5.2 stable**；渲染为 GL Compatibility，固定模拟步长 30 Hz。用 Godot 导入 `project.godot` 后按 F6/F5。规则与初始数值位于 `data/rules.json`。
 
 ```powershell

@@ -29,6 +29,7 @@ KEY = os.environ.get("STEAM_PUBLISHER_KEY", "")
 
 
 class Connection(sqlite3.Connection):
+    # 先提交或回滚事务，再确保数据库连接关闭。
     def __exit__(self, *args):
         try:
             return super().__exit__(*args)
@@ -36,6 +37,7 @@ class Connection(sqlite3.Connection):
             self.close()
 
 
+# 打开数据库并建立必要表；Connection 在事务退出后关闭连接。
 def connect():
     db = sqlite3.connect(DB_PATH, timeout=30, factory=Connection)
     db.row_factory = sqlite3.Row
@@ -48,6 +50,7 @@ def connect():
     return db
 
 
+# 调用发布者 Web API；密钥只从服务端环境变量读取，不能放进客户端。
 def steam_api(interface, method, params, version="v1", post=False):
     if not APP_ID or not KEY:
         raise ValueError("Steam production credentials are not configured")
@@ -58,6 +61,7 @@ def steam_api(interface, method, params, version="v1", post=False):
         return json.load(response)
 
 
+# 验证票据和游戏所有权，创建一小时会话；数据库只保存令牌的哈希。
 def authenticate(ticket):
     if not isinstance(ticket, str) or not 20 <= len(ticket) <= 8192 or any(c not in "0123456789abcdefABCDEF" for c in ticket):
         raise ValueError("Malformed ticket")
@@ -76,6 +80,7 @@ def authenticate(ticket):
     return {"token": token, "steamid": steamid, "expires_in": 3600}
 
 
+# 根据会话令牌哈希查询未过期的 Steam 身份。
 def identity(token):
     with connect() as db:
         row = db.execute("SELECT steamid FROM sessions WHERE token=? AND expires>?", (hashlib.sha256(token.encode()).hexdigest(), time.time())).fetchone()
@@ -84,6 +89,7 @@ def identity(token):
     return row["steamid"]
 
 
+# 由服务端选择种子、培养快照和初始蓝图，避免信任客户端声明。
 def create_run(steamid, map_id):
     if type(map_id) is not int or map_id not in range(5):
         raise ValueError("Invalid map")
@@ -99,6 +105,7 @@ def create_run(steamid, map_id):
     return {"run_id": run_id, "initial": initial, "verified": False}
 
 
+# 限制命令数量后启动 Godot 无窗口回放，检查退出码及返回成绩。
 def verify_replay(initial, commands):
     if not isinstance(commands, list) or len(commands) > 50000:
         raise ValueError("Invalid command budget")
@@ -119,6 +126,7 @@ def verify_replay(initial, commands):
     return checked
 
 
+# 锁定出征并验证回放；相同提交可重复查询，但金币与成绩只结算一次。
 def submit(steamid, run_id, commands):
     digest = hashlib.sha256(json.dumps(commands, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     with connect() as db:
@@ -150,6 +158,7 @@ def submit(steamid, run_id, commands):
     return result
 
 
+# 按规则版本和地图查询榜单；先计算全榜并列名次，再分页。
 def leaderboard(map_id, offset=0):
     if map_id not in range(5) or not 0 <= offset <= 1000000:
         raise ValueError("Invalid page")
@@ -161,6 +170,7 @@ def leaderboard(map_id, offset=0):
     return [dict(r) for r in rows]
 
 
+# 管理员显式调用的上传入口；只有配置完五个正式榜单后才可使用。
 def upload_pending():
     """Explicit administrative action only, after Trusted boards are configured."""
     boards = json.loads(os.environ.get("STEAM_BOARD_IDS", "{}"))
@@ -176,9 +186,11 @@ def upload_pending():
 
 
 class Handler(BaseHTTPRequestHandler):
+    # 禁用默认请求日志，避免把身份验证信息记录到日志。
     def log_message(self, *_):
         pass  # Never log bearer tokens or Steam tickets.
 
+    # 把响应编码为 JSON 并设置 HTTP 状态及内容长度。
     def respond(self, status, value):
         body = json.dumps(value).encode()
         self.send_response(status)
@@ -187,6 +199,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # 处理身份验证、新建出征和提交回放；身份从会话读取。
     def do_POST(self):
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -208,6 +221,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             self.respond(503, {"error": "verification unavailable"})
 
+    # 提供开发健康检查和排行榜查询。
     def do_GET(self):
         try:
             url = urllib.parse.urlparse(self.path)

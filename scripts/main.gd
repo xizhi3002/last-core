@@ -1,4 +1,6 @@
 extends Control
+# 游戏入口和界面控制器：负责页面、输入、音效及调用模拟器。
+# 战斗规则在 simulation.gd 中；界面刷新不应自行改变伤害或寻路结果。
 const Simulation = preload("res://scripts/simulation.gd")
 const Storage = preload("res://scripts/storage.gd")
 const Board = preload("res://scripts/board.gd")
@@ -33,6 +35,7 @@ const MINT = Color("6ce5c5")
 const MUTED = Color("8597a9")
 const GOLD = Color("ebc683")
 
+# 初始化字体、主题、音频和主菜单；命令行参数可进入截图或导出验证流程。
 func _ready():
 	get_tree().auto_accept_quit = false
 	font = SystemFont.new()
@@ -63,6 +66,7 @@ func _ready():
 	if "--release-smoke" in OS.get_cmdline_user_args(): release_smoke.call_deferred()
 	if store.error != "": toast(store.error)
 
+# 生成共用的控件背景样式，统一边框、圆角和内边距。
 func style(bg: Color,border: Color,radius: int) -> StyleBoxFlat:
 	var box = StyleBoxFlat.new()
 	box.bg_color = bg
@@ -75,6 +79,7 @@ func style(bg: Color,border: Color,radius: int) -> StyleBoxFlat:
 	box.content_margin_bottom = 9
 	return box
 
+# 创建实时音频流，用程序生成提示音；无窗口测试时跳过音频。
 func setup_audio():
 	if DisplayServer.get_name() == "headless": return
 	audio_player = AudioStreamPlayer.new()
@@ -86,14 +91,17 @@ func setup_audio():
 	audio_player.play()
 	audio_buffer = audio_player.get_stream_playback()
 
+# 退出场景时释放音频缓冲并停止播放。
 func _exit_tree():
 	audio_buffer = null
 	if is_instance_valid(audio_player): audio_player.stop()
 
+# 设置下一次提示音的频率和剩余采样数。
 func sound(freq = 660.0):
 	beep_left = 1600
 	beep_frequency = freq
 
+# 向音频缓冲写入正弦波采样，末尾降低振幅以减轻爆音。
 func fill_audio():
 	if audio_buffer == null: return
 	var frames = audio_buffer.get_frames_available()
@@ -105,6 +113,7 @@ func fill_audio():
 			audio_phase += TAU*beep_frequency/22050.0
 		audio_buffer.push_frame(Vector2(v,v))
 
+# 累积帧时间并按固定步长推进战斗；界面刷新和波间倒计时分别处理。
 func _process(delta):
 	anim += delta
 	fill_audio()
@@ -114,6 +123,7 @@ func _process(delta):
 		toast_label.visible = toast_time > 0
 	if screen != "game" or sim.s.is_empty(): return
 	if sim.s.state == "battle" and not paused:
+		# 限制单帧补时和最多模拟步数，防止窗口卡顿后长时间补算导致继续卡顿。
 		elapsed += minf(delta,0.25)*speed
 		var steps = 0
 		while elapsed >= Simulation.STEP and steps < 24:
@@ -131,17 +141,20 @@ func _process(delta):
 		refresh = 0
 		update_hud()
 
+# 拦截关闭窗口事件，先保存出征再退出。
 func _notification(what):
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		save_run()
 		quit_game()
 
+# 停止音频后稍作等待，再结束程序。
 func quit_game():
 	audio_buffer = null
 	if is_instance_valid(audio_player): audio_player.stop()
 	await get_tree().create_timer(0.15).timeout
 	get_tree().quit()
 
+# 处理未被控件消费的快捷键；弹窗打开时阻止战场快捷操作。
 func _unhandled_key_input(event):
 	if not event is InputEventKey or not event.pressed or event.echo: return
 	if event.keycode == KEY_ESCAPE:
@@ -171,6 +184,7 @@ func _unhandled_key_input(event):
 		KEY_F11:
 			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN if DisplayServer.window_get_mode()!=DisplayServer.WINDOW_MODE_FULLSCREEN else DisplayServer.WINDOW_MODE_WINDOWED)
 
+# 绘制菜单背景、核心图案和装饰动画，不处理战斗规则。
 func _draw():
 	if screen == "game": return
 	draw_rect(Rect2(Vector2.ZERO,size),Color("09131e"))
@@ -200,6 +214,7 @@ func _draw():
 		var p = center+Vector2.from_angle(a)*r
 		draw_circle(p,3 if i%5 else 5,Color("b6667e"))
 
+# 移除旧页面及弹窗，重新建立页面容器和底部提示标签。
 func clear_page():
 	close_modal()
 	if toast_label != null and is_instance_valid(toast_label):
@@ -224,6 +239,7 @@ func clear_page():
 	add_child(toast_label)
 	toast_label.visible = false
 
+# 创建单行标签并设置字号、颜色。
 func text(parent: Node,value: String,sz = 16,color = Color("dbe8ef")) -> Label:
 	var label = Label.new()
 	label.text = value
@@ -232,11 +248,13 @@ func text(parent: Node,value: String,sz = 16,color = Color("dbe8ef")) -> Label:
 	parent.add_child(label)
 	return label
 
+# 创建可自动换行的说明文字。
 func paragraph(parent: Node,value: String,sz = 15,color = MUTED) -> Label:
 	var label = text(parent,value,sz,color)
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	return label
 
+# 创建按钮，将传入的 Callable 回调连接到点击信号。
 func button(parent: Node,value: String,fn: Callable,primary = false) -> Button:
 	var b = Button.new()
 	b.text = value
@@ -249,26 +267,31 @@ func button(parent: Node,value: String,fn: Callable,primary = false) -> Button:
 	parent.add_child(b)
 	return b
 
+# 创建纵向布局容器。
 func vbox(parent: Node) -> VBoxContainer:
 	var v = VBoxContainer.new()
 	parent.add_child(v)
 	return v
 
+# 创建横向布局容器。
 func hbox(parent: Node) -> HBoxContainer:
 	var h = HBoxContainer.new()
 	parent.add_child(h)
 	return h
 
+# 创建带面板背景的卡片，并返回内部纵向容器。
 func card(parent: Node) -> VBoxContainer:
 	var panel = PanelContainer.new()
 	parent.add_child(panel)
 	return vbox(panel)
 
+# 添加固定高度的空白控件。
 func spacer(parent: Node,height = 12):
 	var c = Control.new()
 	c.custom_minimum_size.y = height
 	parent.add_child(c)
 
+# 创建铺满页面的边距容器，数值是像素。
 func margin_root(left = 36,top = 28,right = 36,bottom = 28) -> MarginContainer:
 	var m = MarginContainer.new()
 	m.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -279,6 +302,7 @@ func margin_root(left = 36,top = 28,right = 36,bottom = 28) -> MarginContainer:
 	page.add_child(m)
 	return m
 
+# 显示指挥中心入口，包括新出征、继续存档、研究和纪录。
 func show_menu():
 	screen = "menu"
 	clear_page()
@@ -315,6 +339,7 @@ func show_menu():
 	text(root,"01  建造防线     /     02  抵御虫群     /     03  无限进化",14,MUTED)
 	text(root,"本地开发版 0.1.0    •    GODOT 4.5.2    •    正式 Steam 服务未配置",12,Color("546e80"))
 
+# 创建页面标题、说明及返回入口。
 func page_heading(root: Node,title: String,subtitle: String):
 	var row = hbox(root)
 	button(row,"← 返回",show_menu)
@@ -322,6 +347,7 @@ func page_heading(root: Node,title: String,subtitle: String):
 	paragraph(root,subtitle)
 	spacer(root,10)
 
+# 显示五档地图的尺寸和规则，选择后进入蓝图配置。
 func show_map_select():
 	screen = "maps"
 	clear_page()
@@ -345,6 +371,7 @@ func show_map_select():
 	paragraph(root,"每波最多三个进攻方向；每 15 波领取一次奖励。可随时保存退出，战斗中退出会恢复到波前状态。")
 	if not store.data.run.is_empty(): paragraph(root,"已有未结束出征。开始新出征前会结算旧出征的已保存进度。",15,GOLD)
 
+# 显示可携带蓝图和种子输入，准备开始新出征。
 func show_loadout():
 	screen = "loadout"
 	clear_page()
@@ -384,6 +411,7 @@ func show_loadout():
 	start.disabled = chosen_loadout.size() != 6
 	paragraph(root,"磁轨穿透 · 熔火范围 · 星陨越障 · 雷链跳跃 · 棱镜破甲 · 极寒控制\n解锁额外蓝图后，可在六个携带槽中自由替换。")
 
+# 创建新模拟器并快照永久培养；已有保存出征会先结算。
 func begin_run(seed_value: int):
 	if not store.data.run.is_empty(): store.settle(store.data.run)
 	sim = Simulation.new()
@@ -395,6 +423,7 @@ func begin_run(seed_value: int):
 	save_run()
 	show_game()
 
+# 恢复保存的出征，按状态重新打开战场、奖励或商店界面。
 func resume_run():
 	if not sim.restore(store.data.run):
 		toast("存档规则版本不兼容，原记录已保留")
@@ -409,6 +438,7 @@ func resume_run():
 	if sim.s.state == "reward": show_reward()
 	elif sim.s.state == "shop": show_run_shop()
 
+# 搭建战场、状态栏、蓝图按钮和挂机选项，并连接棋盘信号。
 func show_game():
 	screen = "game"
 	clear_page()
@@ -503,6 +533,7 @@ func show_game():
 		b.tooltip_text = d.role
 	update_hud()
 
+# 读取模拟器状态刷新数值和按钮；这里不计算战斗伤害。
 func update_hud():
 	if screen != "game" or hud.is_empty(): return
 	var s: Dictionary = sim.s
@@ -531,12 +562,14 @@ func update_hud():
 	hud.pause.text = "继续战斗  [空格]" if paused else "暂停观察  [空格]"
 	hud.log.text = "\n".join(s.log.slice(maxi(0,s.log.size()-3)))
 
+# 切换当前建造蓝图，并取消待执行的群体移动。
 func select_build(id: String):
 	selected = id
 	board.selected = id
 	moving.clear()
 	update_hud()
 
+# 把地格点击转换成查看、建造、拆除或移动命令，并保存结果。
 func on_cell_clicked(p: Vector2i,mouse_button: int):
 	if not sim.inside(p): return
 	if mouse_button == MOUSE_BUTTON_LEFT and sim.s.buildings.has(sim.key(p)) and moving.is_empty():
@@ -567,6 +600,7 @@ func on_cell_clicked(p: Vector2i,mouse_button: int):
 	save_run()
 	update_hud()
 
+# 显示单座建筑的伤害统计、地形加成和目标优先级。
 func show_building(p: Vector2i):
 	var b: Dictionary = sim.s.buildings[sim.key(p)]
 	var body = modal(sim.defs[b.id].name+" / 作战配置",790)
@@ -584,6 +618,7 @@ func show_building(p: Vector2i):
 	paragraph(body,"战斗中只能查看，波间可修改目标优先级。",14,MUTED)
 	button(body,"返回战场",close_modal,true)
 
+# 只在空白且可编辑的防线上放置示例构筑；仍逐座检查预算和连通性。
 func starter_layout():
 	if not sim.editable():
 		toast("只能在准备或休整时布阵")
@@ -603,6 +638,7 @@ func starter_layout():
 	toast("已部署 %d 座建筑；可自行补充或修改后开战" % built)
 	update_hud()
 
+# 切换编辑和休整状态；编辑时停止自动开波倒计时。
 func toggle_edit():
 	if sim.s.state == "edit":
 		sim.s.state = "intermission"
@@ -611,9 +647,11 @@ func toggle_edit():
 	save_run()
 	update_hud()
 
+# 先保存波前快照，再清空时间累积量并启动战斗。
 func start_wave():
 	if not sim.editable(): return
 	close_modal()
+	# 开战前记录检查点：战斗中退出会恢复到这里，未完成波次不发奖励。
 	checkpoint = sim.snapshot()
 	store.data.run = checkpoint.duplicate(true)
 	store.save()
@@ -623,6 +661,7 @@ func start_wave():
 	sound(420)
 	update_hud()
 
+# 处理失败结算或波间存档；根据挂机偏好领取奖励、购买补给。
 func on_wave_end():
 	countdown = 5
 	sound(270 if sim.s.state == "ended" else 960)
@@ -645,11 +684,13 @@ func on_wave_end():
 			sim.close_shop()
 			save_run()
 
+# 战斗中保存波前检查点；其他阶段保存当前状态，避免存储半场战斗。
 func save_run():
 	if sim.s.is_empty() or sim.s.state == "ended": return
 	store.data.run = checkpoint.duplicate(true) if sim.s.state == "battle" else sim.snapshot()
 	if not store.save(): toast(store.error)
 
+# 建立遮罩和弹窗面板，返回用于添加内容的容器。
 func modal(title: String,width = 760) -> VBoxContainer:
 	close_modal()
 	overlay = Control.new()
@@ -670,12 +711,14 @@ func modal(title: String,width = 760) -> VBoxContainer:
 	spacer(body,4)
 	return body
 
+# 释放当前弹窗，并清空引用。
 func close_modal():
 	if overlay != null and is_instance_valid(overlay):
 		remove_child(overlay)
 		overlay.queue_free()
 	overlay = null
 
+# 提供普通怪、特殊怪路线筛选和入口定位。
 func show_route_menu():
 	var body = modal("敌人路线",720)
 	paragraph(body,"预览与实战共用同一寻路规则。布局变化后即时更新；石墙被摧毁后路线可能变化。")
@@ -696,6 +739,7 @@ func show_route_menu():
 	button(bottom,"隐藏路线",func(): board.show_routes=false; close_modal())
 	button(bottom,"返回战场",close_modal,true)
 
+# 预览未来波次及敌人属性，并在允许的波间提供挑战报名。
 func show_wave_details():
 	var body = modal("波次情报",790)
 	for w in range(int(sim.s.completed)+1,int(sim.s.completed)+4):
@@ -718,6 +762,7 @@ func show_wave_details():
 	else: text(body,"挑战默认跳过 · 第 7 波前开始开放报名",14,GOLD)
 	button(body,"返回",close_modal)
 
+# 展示金币、全体强化或指定炮台强化，领取后进入补给站。
 func show_reward():
 	var body = modal("周期突破  /  第 %d 波完成" % sim.s.completed,940)
 	paragraph(body,"选择一项奖励。强化与金币互斥，领取后进入补给站。"+("  挑战成功加成已生效！" if sim.s.challenge_bonus else ""))
@@ -750,6 +795,7 @@ func show_reward():
 	paragraph(gold,"本局可以消费，剩余带回用于永久培养。",13)
 	button(gold,"领取金币",func(): sim.claim_reward("gold"); save_run(); show_run_shop())
 
+# 显示本局金币与补给库存，购买后保存并刷新页面。
 func show_run_shop():
 	var body = modal("战地补给站",780)
 	text(body,"本局收入 %s  −  消费 %s  =  可用 %s" % [num(sim.s.income),num(sim.s.spent),num(sim.s.income-sim.s.spent)],17,GOLD)
@@ -765,6 +811,7 @@ func show_run_shop():
 		b.disabled = sim.s.shop_stock[i] <= 0
 	button(body,"完成补给，继续出征  →",func(): sim.close_shop(); countdown=5; save_run(); close_modal(),true)
 
+# 暂停战斗并显示继续、保存退出、设置和投降入口。
 func show_pause():
 	paused = true
 	var body = modal("指挥菜单",580)
@@ -775,12 +822,14 @@ func show_pause():
 	button(body,"保存并返回主菜单",func(): save_run(); show_menu())
 	button(body,"投降 / 结束出征",confirm_surrender)
 
+# 显示结束出征确认框，确认后结算已获得的收益。
 func confirm_surrender():
 	var body = modal("结束本次出征？",580)
 	paragraph(body,"最高已完成 %d 波；未完成波不发奖励。可带走 %d 金币。" % [sim.s.completed,sim.s.income-sim.s.spent])
 	button(body,"确认结束并结算",func(): sim.finish("主动撤离" if sim.editable() else "主动投降"); settled_amount=store.settle(sim.s); show_result(),true)
 	button(body,"继续出征",func(): paused=false; close_modal())
 
+# 显示已完成波数、带回金币和本地纪录状态。
 func show_result():
 	var body = modal("核心失守" if sim.s.hp <= 0 else "出征结束",730)
 	text(body,"最高完成   %d 波" % sim.s.completed,38,MINT)
@@ -791,6 +840,7 @@ func show_result():
 	button(row,"返回指挥中心",show_menu)
 	button(row,"查看战报",show_battle_report)
 
+# 按累计伤害排列建筑，并展示最近一波漏怪和障碍损毁。
 func show_battle_report():
 	var body = modal("防线战报",780)
 	var rows: Array = []
@@ -806,6 +856,7 @@ func show_battle_report():
 		paragraph(body,"最近波漏怪："+("无" if leaks.is_empty() else "、".join(leaks))+"\n障碍损毁：%d" % sim.report.destroyed)
 	button(body,"返回",show_result if sim.s.state == "ended" else show_pause)
 
+# 显示永久研究和炮台解锁，修改只在新出征快照中生效。
 func show_meta_shop():
 	screen = "research"
 	clear_page()
@@ -842,6 +893,7 @@ func show_meta_shop():
 			button(box,"进阶分支 / 模块",func(): show_modules(d.id))
 	paragraph(root,"未消费的出征金币与首次每 15 波里程碑奖励用于永久研究。进阶分支与模块在新出征生效，切换已解锁配置免费。",14,MUTED)
 
+# 购买或切换炮台分支与模块，已解锁的配置可免费切换。
 func show_modules(id: String):
 	var body = modal(sim.defs[id].name+" / 技术改造",780)
 	paragraph(body,"每种炮台可装配一个进阶分支与一个模块。培养效果在出征开始时快照，已有出征不会改变。")
@@ -865,6 +917,7 @@ func show_modules(id: String):
 				show_modules(id))
 	button(body,"返回研究室",func(): close_modal(); show_meta_shop(),true)
 
+# 检查局外金币，购买一级永久研究后保存。
 func purchase_meta(id: String,cost: int):
 	if store.data.coins < cost:
 		toast("金币不足，出征可获取金币")
@@ -874,6 +927,7 @@ func purchase_meta(id: String,cost: int):
 	store.save()
 	show_meta_shop()
 
+# 按地图筛选本地纪录；相同波数采用并列名次，未接入正式 Steam 榜。
 func show_records():
 	screen = "records"
 	clear_page()
@@ -900,6 +954,7 @@ func show_records():
 	paragraph(root,"全球 / 好友 / 附近排名需要本游戏 AppID、Steamworks 绑定和可信成绩服务。当前版本保留本地游玩；纯离线记录不会冒充已验证成绩。",16)
 	paragraph(root,"五个长期榜单，不设赛季。服务端接口、同一模拟器回放校验入口与部署说明随源码交付。",14)
 
+# 配置音量、特效、自动奖励、自动购买和障碍重建偏好。
 func show_settings():
 	var body = modal("设置与挂机偏好",720)
 	var vol = hbox(body)
@@ -968,12 +1023,14 @@ func show_settings():
 	paragraph(body,"波间倒计时使用实际时间；自动奖励开启后跳过商店，自动购买只买所选品类一件且受预算限制。关闭游戏不生成离线收益。",14,GOLD)
 	button(body,"保存设置",func(): store.save(); save_run(); close_modal(); paused=false,true)
 
+# 显示短暂的底部提示，不阻塞战斗。
 func toast(message: String):
 	if toast_label == null or not is_instance_valid(toast_label): return
 	toast_label.text = message
 	toast_time = 4.5
 	toast_label.visible = true
 
+# 将大数缩写为 k、M、B 或科学计数法，避免撑破界面。
 func num(value) -> String:
 	var n = float(value)
 	if n >= 1e12: return "%.2e" % n
@@ -982,6 +1039,7 @@ func num(value) -> String:
 	if n >= 10000: return "%.1fk" % (n/1000)
 	return str(int(n))
 
+# 自动运行固定演示并保存截图，只供开发打包使用。
 func capture_demo():
 	await get_tree().create_timer(1.0).timeout
 	get_viewport().get_texture().get_image().save_png("res://build/menu.png")
@@ -1003,6 +1061,7 @@ func capture_demo():
 	await get_tree().create_timer(0.3).timeout
 	quit_game()
 
+# 使用独立存档验证导出程序能够开始出征并保存。
 func release_smoke():
 	store.path = "user://release_smoke.json"
 	store.data.run = {}
