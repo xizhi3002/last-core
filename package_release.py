@@ -31,7 +31,7 @@ for name in ['menu.png', 'game.png']:
     '最后核心 · LAST CORE 0.1.0\n\n双击 LastCore.exe 开始。无需安装 Godot。\n'
     '第一局：部署新防线 → 16×16 → 默认蓝图 → 开始出征 → 一键基础布阵 → 启动防线。\n'
     '每15波手动领奖；可把周期奖励切为优先金币/强化以持续挂机。\n'
-    '当前为本地开发版，Steam 正式联网尚未启用。完整操作与范围见 README.md。\n',
+    '当前为离线开发版。完整操作与范围见 README.md。\n',
     encoding='utf-8-sig')
 digest = hashlib.sha256((RELEASE / 'LastCore.exe').read_bytes()).hexdigest()
 (RELEASE / 'SHA256.txt').write_text(f'{digest}  LastCore.exe\n', encoding='ascii')

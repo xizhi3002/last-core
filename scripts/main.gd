@@ -16,7 +16,7 @@ var screen = "menu"
 var chosen_map = 0
 var chosen_loadout: Array = ["rail","ember","mortar","arc","lance","frost"]
 var selected = "rail"
-var speed = 1
+var speed = 0.5
 var paused = false
 var elapsed = 0.0
 var countdown = 5.0
@@ -25,6 +25,15 @@ var toast_label: Label
 var toast_time = 0.0
 var moving: Array = []
 var checkpoint: Dictionary = {}
+# 待确认命令只保存在界面层；确认前不扣费、不移动原建筑。
+var draft: Dictionary = {}
+var focused_cell = Vector2i(-1,-1)
+var draft_error = ""
+var panel_body: VBoxContainer
+var palette_drag = false
+var palette_start = Vector2.ZERO
+var palette_id = ""
+var palette_suppress = false
 var settled_amount = 0
 var anim = 0.0
 var audio_player: AudioStreamPlayer
@@ -161,6 +170,9 @@ func _notification(what):
 			if board != null: board.reset_touches()
 	elif what == NOTIFICATION_WM_GO_BACK_REQUEST:
 		if screen == "game":
+			if not draft.is_empty():
+				cancel_draft()
+				return
 			if sim.s.state not in ["reward","shop","ended"]:
 				if overlay != null: close_modal()
 				else: show_pause()
@@ -188,6 +200,9 @@ func _unhandled_key_input(event):
 		else: show_menu()
 		return
 	if screen != "game" or overlay != null: return
+	if mobile:
+		if event.keycode == KEY_SPACE: paused = not paused; update_hud()
+		return
 	match event.keycode:
 		KEY_SPACE:
 			if sim.s.state == "battle": paused = not paused
@@ -240,6 +255,8 @@ func _draw():
 
 # 移除旧页面及弹窗，重新建立页面容器和底部提示标签。
 func clear_page():
+	draft.clear()
+	focused_cell = Vector2i(-1,-1)
 	close_modal()
 	if toast_label != null and is_instance_valid(toast_label):
 		remove_child(toast_label)
@@ -365,7 +382,7 @@ func show_menu():
 	if not store.data.run.is_empty(): button(menu,"继续出征     →",resume_run,true)
 	button(menu,"部署新防线     →",show_map_select,store.data.run.is_empty())
 	button(menu,"永久研究  /  蓝图库",show_meta_shop)
-	button(menu,"远征纪录  /  排行榜",show_records)
+	button(menu,"本地远征纪录",show_records)
 	var row = hbox(menu)
 	button(row,"设置",show_settings).size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	button(row,"退出",quit_game).size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -375,7 +392,7 @@ func show_menu():
 	fill2.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	root.add_child(fill2)
 	text(root,"01  建造防线     /     02  抵御虫群     /     03  无限进化",14,MUTED)
-	text(root,"本地开发版 0.1.0    •    GODOT 4.5.2    •    正式 Steam 服务未配置",12,Color("546e80"))
+	text(root,"离线版 0.3.0    •    GODOT 4.5.2",12,Color("546e80"))
 
 # 创建页面标题、说明及返回入口。
 func page_heading(root: Node,title: String,subtitle: String):
@@ -455,7 +472,7 @@ func begin_run(seed_value: int):
 	sim = Simulation.new()
 	sim.new_run(chosen_map,seed_value,store.data.meta,chosen_loadout)
 	paused = false
-	speed = 1
+	speed = 0.5 if mobile else 1.0
 	selected = chosen_loadout[0]
 	checkpoint = sim.snapshot()
 	save_run()
@@ -608,6 +625,10 @@ func update_hud():
 
 # 切换当前建造蓝图，并取消待执行的群体移动。
 func select_build(id: String):
+	if mobile:
+		if palette_suppress: return
+		begin_draft("place",id)
+		return
 	selected = id
 	touch_mode = "build"
 	board.selected = id
@@ -616,18 +637,14 @@ func select_build(id: String):
 
 # 把地格点击转换成查看、建造、拆除或移动命令，并保存结果。
 func on_cell_clicked(p: Vector2i,mouse_button: int):
+	if mobile:
+		if not draft.is_empty(): update_draft(p)
+		elif sim.inside(p):
+			focused_cell = p
+			board.focus_cell = p
+			refresh_tactical_panel()
+		return
 	if not sim.inside(p): return
-	if mobile and sim.editable():
-		if touch_mode in ["remove","move"] and sim.s.state == "intermission": sim.s.state = "edit"
-		if touch_mode == "remove":
-			if sim.remove(p): sound(330); save_run(); update_hud()
-			return
-		if touch_mode == "move" and moving.is_empty():
-			if sim.s.buildings.has(sim.key(p)):
-				moving = [p]
-				board.selection = [p]
-				toast("已选中建筑，请轻点目标地格")
-			return
 	if mouse_button == MOUSE_BUTTON_LEFT and sim.s.buildings.has(sim.key(p)) and moving.is_empty():
 		if sim.s.state == "intermission": sim.s.state = "edit"
 		show_building(p)
@@ -705,6 +722,7 @@ func toggle_edit():
 
 # 先保存波前快照，再清空时间累积量并启动战斗。
 func start_wave():
+	if not draft.is_empty(): return
 	if not sim.editable(): return
 	close_modal()
 	# 开战前记录检查点：战斗中退出会恢复到这里，未完成波次不发奖励。
@@ -715,11 +733,13 @@ func start_wave():
 	paused = false
 	sim.start_wave()
 	sound(420)
+	if mobile: refresh_tactical_panel()
 	update_hud()
 
 # 处理失败结算或波间存档；根据挂机偏好领取奖励、购买补给。
 func on_wave_end():
 	countdown = 5
+	if mobile: refresh_tactical_panel()
 	sound(270 if sim.s.state == "ended" else 960)
 	if sim.s.state == "ended":
 		settled_amount = store.settle(sim.s)
@@ -904,7 +924,7 @@ func show_result():
 	var body = modal("核心失守" if sim.s.hp <= 0 else "出征结束",730)
 	text(body,"最高完成   %d 波" % sim.s.completed,38,MINT)
 	text(body,"带回 %s 金币（含首次里程碑奖励）" % num(settled_amount),22,GOLD)
-	paragraph(body,"战区：%s  ·  种子：%d\n击杀 %d  /  漏怪 %d  /  挑战成功 %d\n本地未验证纪录；不会提交到正式 Steam 排行榜。" % [sim.rules.maps[sim.s.map].name,sim.s.seed,sim.s.kills,sim.s.leaks,sim.s.challenges_won])
+	paragraph(body,"战区：%s  ·  种子：%d\n击杀 %d  /  漏怪 %d  /  挑战成功 %d\n纪录仅保存在本机。" % [sim.rules.maps[sim.s.map].name,sim.s.seed,sim.s.kills,sim.s.leaks,sim.s.challenges_won])
 	var row = hbox(body)
 	button(row,"同种子重新出征",func(): begin_run(int(sim.s.seed)),true)
 	button(row,"返回指挥中心",show_menu)
@@ -997,7 +1017,7 @@ func purchase_meta(id: String,cost: int):
 	store.save()
 	show_meta_shop()
 
-# 按地图筛选本地纪录；相同波数采用并列名次，未接入正式 Steam 榜。
+# 按地图筛选本地纪录；相同波数采用并列名次，仅保存在本机。
 func show_records():
 	screen = "records"
 	clear_page()
@@ -1020,9 +1040,6 @@ func show_records():
 		previous = int(r.wave)
 		text(box,"#%02d    %d 波     种子 %d     金币 %s     %s" % [rank,r.wave,r.seed,num(r.coins),r.date.substr(0,10)],17)
 	spacer(root,15)
-	text(root,"Steam 正式排行榜  ·  联网未配置",22,GOLD)
-	paragraph(root,"全球 / 好友 / 附近排名需要本游戏 AppID、Steamworks 绑定和可信成绩服务。当前版本保留本地游玩；纯离线记录不会冒充已验证成绩。",16)
-	paragraph(root,"五个长期榜单，不设赛季。服务端接口、同一模拟器回放校验入口与部署说明随源码交付。",14)
 
 # 配置音量、特效、自动奖励、自动购买和障碍重建偏好。
 func show_settings():
@@ -1167,8 +1184,8 @@ func show_menu_mobile():
 	button(grid_node,"设置与挂机偏好",show_settings)
 	button(grid_node,"退出游戏",show_mobile_exit)
 	text(root,"指挥官资产  %s 金币" % num(store.data.coins),20,GOLD)
-	paragraph(root,"轻点建造 · 单指拖动 · 双指缩放
-自动保存；切到后台暂停。离线开发版，不含 Steam 联网。",18,MUTED)
+	paragraph(root,"拖放预览 · 确认部署 · 随时暂停
+纯离线游玩，自动保存；切到后台暂停。",18,MUTED)
 
 func show_mobile_exit():
 	var body = modal("退出游戏",600)
@@ -1176,76 +1193,271 @@ func show_mobile_exit():
 	button(body,"保存并退出",func(): save_run(); quit_game(),true)
 	button(body,"返回游戏",close_modal)
 
-# 横屏战场只常驻必要状态与蓝图；更多操作收进作战面板。
+# 战场顶栏与蓝图条紧凑显示，全图默认适配剩余区域。
+func compact_button(parent: Node,title: String,action: Callable,accent=false) -> Button:
+	var b = button(parent,title,action,accent)
+	b.custom_minimum_size.y = 36
+	b.add_theme_font_size_override("font_size",15)
+	for state in ["normal","hover","pressed","disabled"]:
+		var box = b.get_theme_stylebox(state).duplicate()
+		box.content_margin_top = 5
+		box.content_margin_bottom = 5
+		box.content_margin_left = 8
+		box.content_margin_right = 8
+		b.add_theme_stylebox_override(state,box)
+	return b
+
+func small_text(parent: Node,value: String,color=MUTED) -> Label:
+	var label = paragraph(parent,value,15,color)
+	label.add_theme_font_size_override("font_size",15)
+	return label
+
 func show_game_mobile():
 	screen = "game"
 	clear_page()
 	moving.clear()
-	touch_mode = "build"
-	var root = vbox(margin_root())
-	root.add_theme_constant_override("separation",6)
+	touch_mode = "inspect"
+	var outer = MarginContainer.new()
+	outer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for side in ["left","right","top","bottom"]: outer.add_theme_constant_override("margin_"+side,6)
+	page.add_child(outer)
+	toast_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	toast_label.offset_top = 42
+	toast_label.offset_bottom = 66
+	toast_label.add_theme_color_override("font_shadow_color",Color.BLACK)
+	toast_label.add_theme_constant_override("shadow_offset_x",1)
+	toast_label.add_theme_constant_override("shadow_offset_y",1)
+	var root = vbox(outer)
+	root.add_theme_constant_override("separation",4)
 	var top = hbox(root)
-	hud["summary"] = text(top,"",18,MINT)
+	top.add_theme_constant_override("separation",5)
+	hud["summary"] = small_text(top,"",MINT)
 	hud.summary.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	button(top,"作战",show_mobile_operations)
-	button(top,"菜单",show_pause)
+	hud["pause"] = compact_button(top,"暂停",func(): paused=not paused; update_hud())
+	for n in [0.5,1.0,2.0]:
+		hud["speed"+str(n)] = compact_button(top,str(n)+"×",func(): speed=n; update_hud())
+	hud["start"] = compact_button(top,"开战",mobile_advance,true)
+	compact_button(top,"全图",func(): board.home())
+	compact_button(top,"菜单",show_pause)
+	var middle = hbox(root)
+	middle.add_theme_constant_override("separation",0)
+	middle.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var panel = PanelContainer.new()
+	panel.custom_minimum_size.x = 206
+	panel.add_theme_stylebox_override("panel",style(Color(0.05,0.10,0.14,0.76),Color(0.3,0.7,0.65,0.3),6))
+	middle.add_child(panel)
+	var panel_scroll = ScrollContainer.new()
+	panel_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(panel_scroll)
+	panel_body = vbox(panel_scroll)
+	panel_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel_body.add_theme_constant_override("separation",7)
 	board = Board.new()
 	board.sim = sim
 	board.touch_enabled = true
-	board.zoom = 2.0
 	board.selected = selected
 	board.effects = store.data.settings.effects
 	board.damage_numbers = store.data.settings.numbers
+	board.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	board.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	board.custom_minimum_size.y = 160
-	root.add_child(board)
+	middle.add_child(board)
 	board.cell_clicked.connect(on_cell_clicked)
-	var controls = hbox(root)
-	hud["start"] = button(controls,"启动防线",mobile_advance,true)
-	for mode in ["build","remove","move"]:
-		var names = {"build":"建造","remove":"拆除","move":"移动"}
-		button(controls,names[mode],func(): touch_mode=mode; moving.clear(); board.selection.clear(); update_hud())
-	button(controls,"−",func(): board.zoom=maxf(0.65,board.zoom/1.35))
-	button(controls,"＋",func(): board.zoom=minf(8,board.zoom*1.35))
-	button(controls,"居中",func(): board.home())
+	board.preview_changed.connect(update_draft)
 	var scroll = ScrollContainer.new()
 	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	scroll.custom_minimum_size.y = 62
+	scroll.custom_minimum_size.y = 54
 	root.add_child(scroll)
 	var row = hbox(scroll)
+	row.add_theme_constant_override("separation",5)
 	var ids = chosen_loadout.duplicate()
 	ids.append_array(["wall","fence","spike","slow"])
 	for id in ids:
 		var d = sim.defs[id]
-		var b = button(row,"%s %d" % [d.name,d.cost],func(): select_build(id))
+		var b = compact_button(row,"%s\n%d" % [d.name,d.cost],func(): select_build(id))
 		b.add_theme_color_override("font_color",Color(d.color))
-	hud["hint"] = text(root,"",18,MUTED)
+		b.gui_input.connect(func(event): blueprint_input(event,id,b))
+	refresh_tactical_panel()
 	update_hud()
 
+# 支持从底栏直接拖出蓝图；松手只确定预览位置，不提交部署。
+func blueprint_input(event,id: String,control: Control):
+	if event is InputEventMouse and event.device == -1: return
+	if event is InputEventScreenTouch or (event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT):
+		if event.pressed:
+			palette_start = control.global_position+event.position
+			palette_id = id
+			palette_drag = false
+			palette_suppress = false
+		else:
+			if palette_drag:
+				palette_suppress = true
+				get_tree().create_timer(0.15).timeout.connect(func(): palette_suppress=false)
+			palette_id = ""
+
+# 拖出蓝图后通过视口输入继续追踪，即使手指已离开原按钮。
+# 横向手势保留给蓝图栏滚动；向上拖出才开始部署。
+func _input(event):
+	if not mobile or screen != "game" or palette_id == "" or overlay != null: return
+	if event is InputEventMouse and event.device == -1: return
+	if event is InputEventScreenDrag or (event is InputEventMouseMotion and event.button_mask & MOUSE_BUTTON_MASK_LEFT):
+		var delta_pos = event.position-palette_start
+		if not palette_drag and delta_pos.y < -12 and absf(delta_pos.y) > absf(delta_pos.x):
+			begin_draft("place",palette_id)
+			palette_drag = not draft.is_empty()
+		if palette_drag:
+			update_draft(board.cell_at(event.position-board.global_position))
+			get_viewport().set_input_as_handled()
+	elif event is InputEventScreenTouch or (event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT):
+		if not event.pressed and palette_drag:
+			palette_suppress = true
+			palette_id = ""
+			palette_drag = false
+			get_tree().create_timer(0.15).timeout.connect(func(): palette_suppress=false)
+			get_viewport().set_input_as_handled()
+
 func mobile_advance():
-	if sim.s.state == "battle": paused = not paused
-	elif sim.s.state == "reward": show_reward()
+	if not draft.is_empty(): return
+	if sim.s.state == "reward": show_reward()
 	elif sim.s.state == "shop": show_run_shop()
 	elif sim.s.state == "ended": show_result()
 	elif sim.editable(): start_wave()
+	refresh_tactical_panel()
 	update_hud()
 
 func update_mobile_hud():
 	if screen != "game" or not hud.has("summary"): return
 	var s = sim.s
-	hud.summary.text = "波 %d  |  核心 %d  |  预算 %s  |  金币 %s" % [s.wave,s.hp,num(s.budget),num(s.income-s.spent)]
-	var names = {"prepare":"启动防线","edit":"开战","battle":"继续" if paused else "暂停","intermission":"下一波 %.0fs" % maxf(countdown,0),"reward":"领取奖励","shop":"补给站","ended":"查看结算"}
+	hud.summary.text = "波 %d · 核心 %d · 预算 %s" % [s.wave,s.hp,num(s.budget)]
+	hud.pause.text = "继续" if paused else "暂停"
+	var names = {"prepare":"开战","edit":"下一波","battle":"交战中","intermission":"开战 %.0fs" % maxf(countdown,0),"reward":"奖励","shop":"补给","ended":"结算"}
 	hud.start.text = names[s.state]
-	hud.hint.text = "%s：%s  /  %d×  ·  拖动平移，双指缩放" % [{"build":"建造","remove":"拆除","move":"移动"}[touch_mode],sim.defs[selected].name,speed]
+	hud.start.disabled = s.state == "battle" or not draft.is_empty()
+	for n in [0.5,1.0,2.0]:
+		hud["speed"+str(n)].text = ("• " if speed == n else "")+str(n)+"×"
+	if hud.has("tower_stats") and is_instance_valid(hud.tower_stats) and sim.s.buildings.has(sim.key(focused_cell)):
+		var b = sim.s.buildings[sim.key(focused_cell)]
+		hud.tower_stats.text = "累计伤害 %s\n开火 %d 次" % [num(b.damage),b.shots]
+
+func begin_draft(kind: String,id: String,source=Vector2i(-1,-1)):
+	if not sim.editable():
+		toast("波间才能部署；战斗中可暂停查看")
+		return
+	# 编辑模式冻结波间倒计时，确认/取消后由玩家主动开战。
+	sim.s.state = "edit"
+	selected = id
+	draft = {"kind":kind,"id":id,"source":source,"cell":Vector2i(-1,-1)}
+	board.preview_id = id
+	board.preview_source = source
+	board.preview_cell = Vector2i(-1,-1)
+	board.preview_active = kind != "remove"
+	board.preview_trail.clear()
+	board.focus_cell = Vector2i(-1,-1)
+	draft_error = "请在战场轻点或拖动，选择位置"
+	refresh_tactical_panel()
+	if kind == "remove": update_draft(source)
+	update_hud()
+
+# 使用独立模拟器检查预算、地形和路径连通性，不改动真实防线。
+func update_draft(p: Vector2i):
+	if draft.is_empty(): return
+	if draft.cell == p: return
+	draft.cell = p
+	board.preview_cell = p
+	if sim.inside(p):
+		board.preview_trail.append(p)
+		if board.preview_trail.size() > 8: board.preview_trail.pop_front()
+	if not sim.inside(p): draft_error = "请选择地图内的地格"
+	elif draft.kind == "remove": draft_error = "" if sim.s.buildings.has(sim.key(p)) else "此处没有建筑"
+	else:
+		var probe = Simulation.new()
+		probe.restore(sim.snapshot())
+		if draft.kind == "place": draft_error = probe.place(draft.id,p,false)
+		else: draft_error = probe.move_group([draft.source],p-draft.source)
+	board.preview_valid = draft_error == ""
+	refresh_tactical_panel()
+
+func confirm_draft():
+	if draft.is_empty() or draft_error != "" or not sim.editable(): return
+	var p: Vector2i = draft.cell
+	var error = ""
+	if draft.kind == "place": error = sim.place(draft.id,p)
+	elif draft.kind == "move": error = sim.move_group([draft.source],p-draft.source)
+	elif not sim.remove(p): error = "无法拆除"
+	if error != "":
+		draft_error = error
+		refresh_tactical_panel()
+		return
+	cancel_draft()
+	focused_cell = p
+	board.focus_cell = p
+	sound(880)
+	save_run()
+	refresh_tactical_panel()
+	update_hud()
+
+func cancel_draft():
+	draft.clear()
+	board.preview_active = false
+	board.preview_cell = Vector2i(-1,-1)
+	board.preview_trail.clear()
+	board.focus_cell = focused_cell
+	refresh_tactical_panel()
+	update_hud()
+
+func refresh_tactical_panel():
+	if not mobile or not is_instance_valid(panel_body): return
+	hud.erase("tower_stats")
+	for child in panel_body.get_children():
+		panel_body.remove_child(child)
+		child.queue_free()
+	var building = sim.s.buildings.get(sim.key(focused_cell),{})
+	var id = draft.id if not draft.is_empty() else building.get("id","")
+	if id == "":
+		small_text(panel_body,"战场指挥",MINT)
+		small_text(panel_body,"蓝图拖入战场或轻点选中，再选择地格。确认后才扣除预算。")
+		small_text(panel_body,"选择炮台可查看射程、伤害和目标优先级。")
+		small_text(panel_body,"波间可布阵；编辑后手动开战。暂停可随时使用。")
+		small_text(panel_body,"双指缩放 · 单指平移\n全图按钮恢复完整战场")
+		compact_button(panel_body,"波次情报",show_wave_details)
+		compact_button(panel_body,"作战设置",show_mobile_operations)
+		return
+	var d = sim.defs[id]
+	small_text(panel_body,d.name,Color(d.color))
+	small_text(panel_body,d.role)
+	if d.has("range"):
+		var p: Vector2i = draft.cell if not draft.is_empty() else focused_cell
+		small_text(panel_body,"射程 %.1f 格 · 基础伤害 %s\n攻击间隔 %.2f 秒" % [sim.effective_range(id,p),num(d.damage),d.cooldown],MINT)
+	else: small_text(panel_body,"耐久 %d" % d.hp,MINT)
+	if not draft.is_empty():
+		var verbs = {"place":"放置","move":"移动","remove":"拆除"}
+		small_text(panel_body,"待确认"+verbs[draft.kind]+(" · 费用 %d" % d.cost if draft.kind == "place" else ""),GOLD)
+		small_text(panel_body,"位置 (%d, %d)" % [draft.cell.x+1,draft.cell.y+1] if sim.inside(draft.cell) else "尚未选择位置")
+		small_text(panel_body,draft_error if draft_error != "" else "位置有效，确认后生效",Color("f08da1") if draft_error != "" else MINT)
+		var confirm = compact_button(panel_body,"✓ 确认"+verbs[draft.kind],confirm_draft,true)
+		confirm.disabled = draft_error != ""
+		compact_button(panel_body,"× 取消",cancel_draft)
+		return
+	hud["tower_stats"] = small_text(panel_body,"累计伤害 %s\n开火 %d 次" % [num(building.damage),building.shots])
+	var terrain_id = sim.s.terrain.get(sim.key(focused_cell),"")
+	if terrain_id != "": small_text(panel_body,sim.rules.terrain[terrain_id].name,GOLD)
+	if d.has("range"):
+		var choices = GridContainer.new()
+		choices.columns = 2
+		panel_body.add_child(choices)
+		for kind in ["core","strong","weak","fast"]:
+			var names = {"core":"近核心","strong":"高生命","weak":"低生命","fast":"最快"}
+			var b = compact_button(choices,names[kind]+("✓" if building.get("priority","core") == kind else ""),func(): sim.set_priority(focused_cell,kind); save_run(); refresh_tactical_panel())
+			b.disabled = not sim.editable()
+	var row = hbox(panel_body)
+	for kind in ["move","remove"]:
+		var b = compact_button(row,"移动" if kind == "move" else "拆除",func(): begin_draft(kind,id,focused_cell))
+		b.disabled = not sim.editable()
+	small_text(panel_body,"战斗中只可查看" if not sim.editable() else "波间可调整目标和位置")
+	compact_button(panel_body,"收起详情",func(): focused_cell=Vector2i(-1,-1); board.focus_cell=focused_cell; refresh_tactical_panel())
 
 func show_mobile_operations():
-	var body = modal("作战面板",700)
-	paragraph(body,"本局 %d 波，击杀 %d。建造与拆除仅在波间开放。" % [sim.s.completed,sim.s.kills])
-	var row = hbox(body)
-	for n in [1,2,3]: button(row,"%d× 速度" % n,func(): speed=n; close_modal())
-	button(body,"编辑 / 结束编辑",func(): toggle_edit(); close_modal())
-	button(body,"一键基础布阵",func(): starter_layout(); close_modal())
-	button(body,"路线与入口",show_route_menu)
+	var body = modal("作战设置",700)
+	paragraph(body,"本局 %d 波，击杀 %d。倍速与暂停可直接在战场顶栏操作。" % [sim.s.completed,sim.s.kills])
 	button(body,"波次情报 / 挑战",show_wave_details)
 	button(body,"自动奖励与购买设置",show_settings)
 	button(body,"返回战场",close_modal,true)

@@ -3,6 +3,14 @@ extends Control
 # 战斗结果由 sim 决定，本脚本负责绘图和发送输入信号。
 signal cell_clicked(cell: Vector2i, button: int)
 signal selection_changed(cells: Array)
+signal preview_changed(cell: Vector2i)
+var preview_active = false
+var preview_id = "rail"
+var preview_cell = Vector2i(-1,-1)
+var preview_source = Vector2i(-1,-1)
+var preview_valid = false
+var preview_trail: Array = []
+var focus_cell = Vector2i(-1,-1)
 var sim
 # 手机触摸：轻点操作，单指拖动平移，双指捏合缩放；拖动结束不误建造。
 var touch_enabled = false
@@ -65,7 +73,7 @@ func _process(delta):
 
 # 重置缩放和平移，使棋盘回到居中视图。
 func home():
-	zoom = 2.0 if touch_enabled else 1.0
+	zoom = 1.0
 	pan = Vector2.ZERO
 
 # 放大并平移到指定入口，方便查看远端防线。
@@ -78,7 +86,7 @@ func jump_to(index: int):
 # 根据控件尺寸、缩放和拖动距离计算地格像素大小及偏移。
 func update_transform():
 	if sim == null or sim.s.is_empty(): return
-	cell_size = minf((size.x-90)/sim.s.width,(size.y-70)/sim.s.height)*zoom
+	cell_size = minf((size.x-(20 if touch_enabled else 90))/sim.s.width,(size.y-(20 if touch_enabled else 70))/sim.s.height)*zoom
 	offset = (size-Vector2(sim.s.width,sim.s.height)*cell_size)*0.5+pan
 
 # 把模拟器的棋盘坐标换算成控件内像素坐标。
@@ -101,6 +109,7 @@ func _gui_input(event):
 	if event is InputEventMouseMotion:
 		hover = cell_at(event.position)
 		if dragging: pan += event.relative
+		if preview_active: preview_changed.emit(hover)
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_MIDDLE:
 			dragging = event.pressed
@@ -131,6 +140,7 @@ func _gui_input(event):
 
 # 返回右下角小地图在当前控件中的矩形区域。
 func minimap_rect() -> Rect2:
+	if touch_enabled: return Rect2()
 	return Rect2(size.x-160,size.y-115,140,90)
 
 # 绘制底纹、网格、岩体和特殊地形，供独立地形层调用。
@@ -176,7 +186,7 @@ func _draw():
 	if show_routes:
 		for dir in 4:
 			if route_filter >= 0 and route_filter != dir: continue
-			if route_filter == -2 and dir not in active: continue
+			if dir not in active: continue
 			var path: Array = sim.paths[1 if special_routes else 0][dir]
 			var color = COLORS[dir]
 			color.a = 0.65 if dir in active else 0.25
@@ -184,13 +194,24 @@ func _draw():
 				var a = point(Vector2(path[i-1])+Vector2.ONE*0.5)
 				var b = point(Vector2(path[i])+Vector2.ONE*0.5)
 				draw_line(a,b,color,maxf(1,cell_size*0.065),true)
-				if i%3 == 0:
-					var d = (b-a).normalized()
-					draw_line(b,b-d.rotated(0.6)*cell_size*0.22,color,1.5,true)
-					draw_line(b,b-d.rotated(-0.6)*cell_size*0.22,color,1.5,true)
+			# 箭头按路径长度向核心移动，只呈现本波/下一波实际出怪入口。
+			for j in range(0,path.size(),3):
+				var progress = fmod(j+pulse*2.0,maxf(1,path.size()-1))
+				var index = int(progress)
+				if index+1 >= path.size(): continue
+				var a = point(Vector2(path[index])+Vector2.ONE*0.5)
+				var b = point(Vector2(path[index+1])+Vector2.ONE*0.5)
+				var tip = a.lerp(b,progress-index)
+				var d = (b-a).normalized()
+				draw_line(tip,tip-d.rotated(0.6)*cell_size*0.32,COLORS[dir],2,true)
+				draw_line(tip,tip-d.rotated(-0.6)*cell_size*0.32,COLORS[dir],2,true)
 	for i in 4:
 		var pos = point(Vector2(sim.entrances()[i])+Vector2.ONE*0.5)
 		if invalid_time > 0 and i in sim.invalid_entries: draw_arc(pos,cell_size*0.5,0,TAU,24,Color("ff597b"),3,true)
+		if i in active:
+			draw_circle(pos,cell_size*(0.65+sin(pulse*3)*0.08),COLORS[i]*Color(1,1,1,0.18))
+			draw_arc(pos,cell_size*0.48,0,TAU,24,COLORS[i],3,true)
+			draw_string(get_theme_default_font(),Vector2(pos.x+8,maxf(14,pos.y-8)),"入口",HORIZONTAL_ALIGNMENT_LEFT,-1,12,COLORS[i])
 		draw_circle(pos,cell_size*0.40,COLORS[i]*Color(1,1,1,0.14))
 		draw_arc(pos,cell_size*0.36,0,TAU,24,COLORS[i] if i in active else Color("475566"),2,true)
 		var d: Vector2 = -Vector2(sim.DIRS[i])
@@ -203,6 +224,7 @@ func _draw():
 	hexagon(center,core_r,Color("5ae2c5"),Color("153d49"))
 	hexagon(center,core_r*0.64,Color("96ffe0"),Color("28665f"))
 	draw_circle(center,core_r*0.22,Color("b5ffee"))
+	draw_string(get_theme_default_font(),center+Vector2(core_r+4,4),"核心",HORIZONTAL_ALIGNMENT_LEFT,-1,13,Color("b5ffee"))
 	for k in s.buildings:
 		var b: Dictionary = s.buildings[k]
 		var pos = point(Vector2(sim.cell(k))+Vector2.ONE*0.5)
@@ -237,7 +259,7 @@ func _draw():
 		var a = point(Vector2(box_start))
 		var b = point(Vector2(hover)+Vector2.ONE)
 		draw_rect(Rect2(a,b-a).abs(),Color(0.5,0.9,0.8,0.15))
-	if sim.inside(hover):
+	if not touch_enabled and sim.inside(hover):
 		var pos = point(Vector2(hover)+Vector2.ONE*0.5)
 		var id = selected
 		if s.buildings.has(sim.key(hover)): id = s.buildings[sim.key(hover)].id
@@ -249,6 +271,23 @@ func _draw():
 		var c = Color("67e2c5") if sim.placement_error(selected,hover) == "" else Color("f07889")
 		if invalid_time > 0 and hover == invalid_cell: c = Color("ff597b")
 		draw_rect(Rect2(point(Vector2(hover)),Vector2.ONE*cell_size).grow(-1),c,false,2)
+	if sim.inside(focus_cell) and s.buildings.has(sim.key(focus_cell)):
+		draw_range(focus_cell,s.buildings[sim.key(focus_cell)].id)
+		draw_rect(Rect2(point(Vector2(focus_cell)),Vector2.ONE*cell_size),Color("ffe1a0"),false,2)
+	if sim.inside(preview_cell):
+		var color = Color("6ce5c5") if preview_valid else Color("ff6d8d")
+		for i in preview_trail.size():
+			var trail_color = color
+			trail_color.a = 0.04+0.02*i
+			draw_rect(Rect2(point(Vector2(preview_trail[i])),Vector2.ONE*cell_size),trail_color)
+		draw_range(preview_cell,preview_id)
+		var rect = Rect2(point(Vector2(preview_cell)),Vector2.ONE*cell_size)
+		draw_rect(rect,Color(color,0.28))
+		draw_rect(rect,color,false,2)
+		draw_building(rect.get_center(),cell_size,preview_id,0)
+		if sim.inside(preview_source): draw_dashed_line(point(Vector2(preview_source)+Vector2.ONE*0.5),rect.get_center(),color,2,6)
+		draw_string(get_theme_default_font(),Vector2(rect.position.x,maxf(14,rect.position.y-5)),"待确认" if preview_valid else "不可放置",HORIZONTAL_ALIGNMENT_LEFT,-1,13,color)
+	if touch_enabled: return
 	# The minimap remains screen anchored when the battlefield is panned.
 	var mini = minimap_rect()
 	draw_rect(mini.grow(8),Color("08121d"))
@@ -260,6 +299,14 @@ func _draw():
 	draw_circle(mini.get_center(),3,Color("6cf4cc"))
 	var view = Rect2((-offset/cell_size)*ratio+mini.position,size/cell_size*ratio).intersection(mini)
 	draw_rect(view,Color("70928f"),false,1)
+
+# 实际射程包含地形及本局加成；移动预览使用目标地格重新计算。
+func draw_range(cell: Vector2i,id: String):
+	if not sim.defs[id].has("range"): return
+	var center = point(Vector2(cell)+Vector2.ONE*0.5)
+	var radius = sim.effective_range(id,cell)*cell_size
+	draw_circle(center,radius,Color(0.35,0.95,0.8,0.10))
+	draw_arc(center,radius,0,TAU,80,Color(0.5,1.0,0.85,0.85),1.5,true)
 
 # 用六边形顶点绘制核心的填充和边框。
 func hexagon(pos: Vector2,r: float,line: Color,fill: Color):
@@ -322,7 +369,9 @@ func handle_touch(event):
 		var old: Vector2 = fingers[event.index]
 		if fingers.size() == 1:
 			if event.position.distance_to(touch_start) >= 12: touch_moved = true
-			if touch_moved: pan += event.position-old
+			if preview_active:
+				preview_changed.emit(cell_at(event.position))
+			elif touch_moved: pan += event.position-old
 			fingers[event.index] = event.position
 		else:
 			touch_moved = true
