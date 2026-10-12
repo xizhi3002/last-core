@@ -10,6 +10,8 @@ var board
 var page: Control
 var overlay: Control
 var hud: Dictionary = {}
+var mobile = OS.has_feature("android") or "--mobile" in OS.get_cmdline_user_args()
+var touch_mode = "build"
 var screen = "menu"
 var chosen_map = 0
 var chosen_loadout: Array = ["rail","ember","mortar","arc","lance","frost"]
@@ -30,7 +32,7 @@ var audio_buffer
 var audio_phase = 0.0
 var beep_left = 0
 var beep_frequency = 440.0
-var font: SystemFont
+var font: Font
 const MINT = Color("6ce5c5")
 const MUTED = Color("8597a9")
 const GOLD = Color("ebc683")
@@ -38,11 +40,20 @@ const GOLD = Color("ebc683")
 # 初始化字体、主题、音频和主菜单；命令行参数可进入截图或导出验证流程。
 func _ready():
 	get_tree().auto_accept_quit = false
+	get_tree().quit_on_go_back = false
+	if mobile:
+		get_window().content_scale_size = Vector2i(960,540)
+		Engine.max_fps = 60
 	font = SystemFont.new()
 	font.font_names = PackedStringArray(["Microsoft YaHei UI","Microsoft YaHei","Noto Sans CJK SC","Arial"])
+	if mobile and ResourceLoader.exists("res://assets/fonts/NotoSansSC.ttf"):
+		var mobile_font = FontVariation.new()
+		mobile_font.base_font = load("res://assets/fonts/NotoSansSC.ttf")
+		mobile_font.variation_opentype = {"weight":400.0}
+		font = mobile_font
 	var t = Theme.new()
 	t.default_font = font
-	t.default_font_size = 15
+	t.default_font_size = 18 if mobile else 15
 	t.set_color("font_color","Label",Color("dce9ef"))
 	t.set_color("font_color","Button",Color("c9dae5"))
 	t.set_color("font_hover_color","Button",Color("ffffff"))
@@ -143,6 +154,19 @@ func _process(delta):
 
 # 拦截关闭窗口事件，先保存出征再退出。
 func _notification(what):
+	if what == NOTIFICATION_APPLICATION_PAUSED:
+		save_run()
+		if screen == "game":
+			paused = true
+			if board != null: board.reset_touches()
+	elif what == NOTIFICATION_WM_GO_BACK_REQUEST:
+		if screen == "game":
+			if sim.s.state not in ["reward","shop","ended"]:
+				if overlay != null: close_modal()
+				else: show_pause()
+		elif overlay != null: close_modal()
+		elif screen != "menu": show_menu()
+		else: show_mobile_exit()
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		save_run()
 		quit_game()
@@ -243,7 +267,7 @@ func clear_page():
 func text(parent: Node,value: String,sz = 16,color = Color("dbe8ef")) -> Label:
 	var label = Label.new()
 	label.text = value
-	label.add_theme_font_size_override("font_size",sz)
+	label.add_theme_font_size_override("font_size",maxi(18,sz) if mobile else sz)
 	label.add_theme_color_override("font_color",color)
 	parent.add_child(label)
 	return label
@@ -258,7 +282,8 @@ func paragraph(parent: Node,value: String,sz = 15,color = MUTED) -> Label:
 func button(parent: Node,value: String,fn: Callable,primary = false) -> Button:
 	var b = Button.new()
 	b.text = value
-	b.custom_minimum_size.y = 38
+	b.custom_minimum_size.y = 48 if mobile else 38
+	if mobile: b.add_theme_font_size_override("font_size",18)
 	b.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	if primary:
 		b.add_theme_stylebox_override("normal",style(Color("6ce5c5"),Color("6ce5c5"),7))
@@ -300,10 +325,23 @@ func margin_root(left = 36,top = 28,right = 36,bottom = 28) -> MarginContainer:
 	m.add_theme_constant_override("margin_right",right)
 	m.add_theme_constant_override("margin_bottom",bottom)
 	page.add_child(m)
+	if mobile:
+		for side in ["left","right","top","bottom"]:
+			m.add_theme_constant_override("margin_"+side,12 if side != "bottom" else 36)
+		if screen != "game":
+			var scroll = ScrollContainer.new()
+			m.add_child(scroll)
+			var inner = MarginContainer.new()
+			inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			scroll.add_child(inner)
+			return inner
 	return m
 
 # 显示指挥中心入口，包括新出征、继续存档、研究和纪录。
 func show_menu():
+	if mobile:
+		show_menu_mobile()
+		return
 	screen = "menu"
 	clear_page()
 	var m = margin_root(76,48,76,50)
@@ -379,7 +417,7 @@ func show_loadout():
 	page_heading(root,"出征蓝图","携带六种炮台。障碍和陷阱不占蓝图槽，建造消耗独立预算。")
 	text(root,sim.rules.maps[chosen_map].name+"  /  六槽配置",24,MINT)
 	var grid_node = GridContainer.new()
-	grid_node.columns = 4
+	grid_node.columns = 2 if mobile else 4
 	grid_node.add_theme_constant_override("h_separation",14)
 	grid_node.add_theme_constant_override("v_separation",14)
 	root.add_child(grid_node)
@@ -440,6 +478,9 @@ func resume_run():
 
 # 搭建战场、状态栏、蓝图按钮和挂机选项，并连接棋盘信号。
 func show_game():
+	if mobile:
+		show_game_mobile()
+		return
 	screen = "game"
 	clear_page()
 	var root = vbox(margin_root(24,18,24,42))
@@ -535,6 +576,9 @@ func show_game():
 
 # 读取模拟器状态刷新数值和按钮；这里不计算战斗伤害。
 func update_hud():
+	if mobile:
+		update_mobile_hud()
+		return
 	if screen != "game" or hud.is_empty(): return
 	var s: Dictionary = sim.s
 	hud.wave.text = "WAVE %02d" % s.wave
@@ -565,6 +609,7 @@ func update_hud():
 # 切换当前建造蓝图，并取消待执行的群体移动。
 func select_build(id: String):
 	selected = id
+	touch_mode = "build"
 	board.selected = id
 	moving.clear()
 	update_hud()
@@ -572,6 +617,17 @@ func select_build(id: String):
 # 把地格点击转换成查看、建造、拆除或移动命令，并保存结果。
 func on_cell_clicked(p: Vector2i,mouse_button: int):
 	if not sim.inside(p): return
+	if mobile and sim.editable():
+		if touch_mode in ["remove","move"] and sim.s.state == "intermission": sim.s.state = "edit"
+		if touch_mode == "remove":
+			if sim.remove(p): sound(330); save_run(); update_hud()
+			return
+		if touch_mode == "move" and moving.is_empty():
+			if sim.s.buildings.has(sim.key(p)):
+				moving = [p]
+				board.selection = [p]
+				toast("已选中建筑，请轻点目标地格")
+			return
 	if mouse_button == MOUSE_BUTTON_LEFT and sim.s.buildings.has(sim.key(p)) and moving.is_empty():
 		if sim.s.state == "intermission": sim.s.state = "edit"
 		show_building(p)
@@ -700,6 +756,20 @@ func modal(title: String,width = 760) -> VBoxContainer:
 	shade.color = Color(0.015,0.025,0.04,0.88)
 	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	overlay.add_child(shade)
+	if mobile:
+		var outer = MarginContainer.new()
+		outer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		for side in ["left","right","top","bottom"]: outer.add_theme_constant_override("margin_"+side,16)
+		overlay.add_child(outer)
+		var panel = PanelContainer.new()
+		outer.add_child(panel)
+		var scroll = ScrollContainer.new()
+		panel.add_child(scroll)
+		var body = vbox(scroll)
+		body.custom_minimum_size.x = minf(width,get_viewport_rect().size.x-70)
+		body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		text(body,title,26)
+		return body
 	var center = CenterContainer.new()
 	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	overlay.add_child(center)
@@ -868,7 +938,7 @@ func show_meta_shop():
 	text(global_row,"基础火力 Lv.%d  /  所有武器每级 +9%% 基础伤害" % level,19,MINT)
 	button(global_row,"研究  %d 金币" % (120+level*85),func(): purchase_meta("power",120+level*85))
 	var grid_node = GridContainer.new()
-	grid_node.columns = 4
+	grid_node.columns = 2 if mobile else 4
 	grid_node.add_theme_constant_override("h_separation",14)
 	grid_node.add_theme_constant_override("v_separation",14)
 	root.add_child(grid_node)
@@ -1077,3 +1147,105 @@ func release_smoke():
 		return
 	print("RELEASE STORAGE SMOKE PASS ",ProjectSettings.globalize_path(store.path))
 	get_tree().quit()
+
+# 手机主菜单使用两列大按钮，避免桌面菜单在横屏手机上过高。
+func show_menu_mobile():
+	screen = "menu"
+	clear_page()
+	var root = vbox(margin_root())
+	text(root,"LAST CORE  /  ANDROID",18,MINT)
+	text(root,"最后核心",44)
+	paragraph(root,"没有终点。只有下一道防线。",20)
+	var grid_node = GridContainer.new()
+	grid_node.columns = 2
+	grid_node.add_theme_constant_override("h_separation",16)
+	root.add_child(grid_node)
+	if not store.data.run.is_empty(): button(grid_node,"继续出征 →",resume_run,true)
+	button(grid_node,"部署新防线 →",show_map_select,true)
+	button(grid_node,"永久研究 / 蓝图库",show_meta_shop)
+	button(grid_node,"远征纪录",show_records)
+	button(grid_node,"设置与挂机偏好",show_settings)
+	button(grid_node,"退出游戏",show_mobile_exit)
+	text(root,"指挥官资产  %s 金币" % num(store.data.coins),20,GOLD)
+	paragraph(root,"轻点建造 · 单指拖动 · 双指缩放
+自动保存；切到后台暂停。离线开发版，不含 Steam 联网。",18,MUTED)
+
+func show_mobile_exit():
+	var body = modal("退出游戏",600)
+	paragraph(body,"当前进度会保存，战斗中退出恢复到本波开始前。")
+	button(body,"保存并退出",func(): save_run(); quit_game(),true)
+	button(body,"返回游戏",close_modal)
+
+# 横屏战场只常驻必要状态与蓝图；更多操作收进作战面板。
+func show_game_mobile():
+	screen = "game"
+	clear_page()
+	moving.clear()
+	touch_mode = "build"
+	var root = vbox(margin_root())
+	root.add_theme_constant_override("separation",6)
+	var top = hbox(root)
+	hud["summary"] = text(top,"",18,MINT)
+	hud.summary.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	button(top,"作战",show_mobile_operations)
+	button(top,"菜单",show_pause)
+	board = Board.new()
+	board.sim = sim
+	board.touch_enabled = true
+	board.zoom = 2.0
+	board.selected = selected
+	board.effects = store.data.settings.effects
+	board.damage_numbers = store.data.settings.numbers
+	board.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	board.custom_minimum_size.y = 160
+	root.add_child(board)
+	board.cell_clicked.connect(on_cell_clicked)
+	var controls = hbox(root)
+	hud["start"] = button(controls,"启动防线",mobile_advance,true)
+	for mode in ["build","remove","move"]:
+		var names = {"build":"建造","remove":"拆除","move":"移动"}
+		button(controls,names[mode],func(): touch_mode=mode; moving.clear(); board.selection.clear(); update_hud())
+	button(controls,"−",func(): board.zoom=maxf(0.65,board.zoom/1.35))
+	button(controls,"＋",func(): board.zoom=minf(8,board.zoom*1.35))
+	button(controls,"居中",func(): board.home())
+	var scroll = ScrollContainer.new()
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.custom_minimum_size.y = 62
+	root.add_child(scroll)
+	var row = hbox(scroll)
+	var ids = chosen_loadout.duplicate()
+	ids.append_array(["wall","fence","spike","slow"])
+	for id in ids:
+		var d = sim.defs[id]
+		var b = button(row,"%s %d" % [d.name,d.cost],func(): select_build(id))
+		b.add_theme_color_override("font_color",Color(d.color))
+	hud["hint"] = text(root,"",18,MUTED)
+	update_hud()
+
+func mobile_advance():
+	if sim.s.state == "battle": paused = not paused
+	elif sim.s.state == "reward": show_reward()
+	elif sim.s.state == "shop": show_run_shop()
+	elif sim.s.state == "ended": show_result()
+	elif sim.editable(): start_wave()
+	update_hud()
+
+func update_mobile_hud():
+	if screen != "game" or not hud.has("summary"): return
+	var s = sim.s
+	hud.summary.text = "波 %d  |  核心 %d  |  预算 %s  |  金币 %s" % [s.wave,s.hp,num(s.budget),num(s.income-s.spent)]
+	var names = {"prepare":"启动防线","edit":"开战","battle":"继续" if paused else "暂停","intermission":"下一波 %.0fs" % maxf(countdown,0),"reward":"领取奖励","shop":"补给站","ended":"查看结算"}
+	hud.start.text = names[s.state]
+	hud.hint.text = "%s：%s  /  %d×  ·  拖动平移，双指缩放" % [{"build":"建造","remove":"拆除","move":"移动"}[touch_mode],sim.defs[selected].name,speed]
+
+func show_mobile_operations():
+	var body = modal("作战面板",700)
+	paragraph(body,"本局 %d 波，击杀 %d。建造与拆除仅在波间开放。" % [sim.s.completed,sim.s.kills])
+	var row = hbox(body)
+	for n in [1,2,3]: button(row,"%d× 速度" % n,func(): speed=n; close_modal())
+	button(body,"编辑 / 结束编辑",func(): toggle_edit(); close_modal())
+	button(body,"一键基础布阵",func(): starter_layout(); close_modal())
+	button(body,"路线与入口",show_route_menu)
+	button(body,"波次情报 / 挑战",show_wave_details)
+	button(body,"自动奖励与购买设置",show_settings)
+	button(body,"返回战场",close_modal,true)

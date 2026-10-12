@@ -31,3 +31,7 @@ Godot includes third-party libraries under their respective licenses.
 Full engine and third-party notices:
 https://godotengine.org/license/
 https://github.com/godotengine/godot/blob/4.5.2-stable/COPYRIGHT.txt
+
+Android Chinese font: Noto Sans SC, Google Fonts / Adobe.
+Licensed under SIL Open Font License 1.1. Full license and copyright notices:
+assets/fonts/OFL.txt. Source: https://github.com/google/fonts/tree/main/ofl/notosanssc

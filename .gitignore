@@ -5,6 +5,9 @@ server/__pycache__/
 *.bak
 .env
 steam_appid.txt
+*.keystore
+*.jks
+docs/**/*.import
 
 export_templates/
 feature_profiles/

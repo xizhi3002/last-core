@@ -13,9 +13,12 @@ window/size/viewport_height=900
 window/size/window_width_override=1440
 window/size/window_height_override=900
 window/stretch/mode="canvas_items"
+window/handheld/orientation=0
 
 [rendering]
 renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
 textures/default_filters/use_nearest_mipmap_filter=false
 environment/defaults/default_clear_color=Color(0.024,0.039,0.059,1)
 
@@ -24,3 +27,6 @@ common/physics_ticks_per_second=30
 
 [audio]
 driver/enable_input=false
+
+[input_devices]
+pointing/emulate_mouse_from_touch=true

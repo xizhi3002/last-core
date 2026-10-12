@@ -4,6 +4,11 @@ extends Control
 signal cell_clicked(cell: Vector2i, button: int)
 signal selection_changed(cells: Array)
 var sim
+# 手机触摸：轻点操作，单指拖动平移，双指捏合缩放；拖动结束不误建造。
+var touch_enabled = false
+var fingers: Dictionary = {}
+var touch_start = Vector2.ZERO
+var touch_moved = false
 var selected = "rail"
 var show_routes = true
 var route_filter = -1 # -2: next-wave directions, -1: all
@@ -60,7 +65,7 @@ func _process(delta):
 
 # 重置缩放和平移，使棋盘回到居中视图。
 func home():
-	zoom = 1.0
+	zoom = 2.0 if touch_enabled else 1.0
 	pan = Vector2.ZERO
 
 # 放大并平移到指定入口，方便查看远端防线。
@@ -87,6 +92,12 @@ func cell_at(p: Vector2) -> Vector2i:
 # 处理拖动、以鼠标为中心缩放、框选、小地图跳转及地格点击。
 func _gui_input(event):
 	if sim == null: return
+	if event is InputEventScreenTouch or event is InputEventScreenDrag:
+		handle_touch(event)
+		accept_event()
+		return
+	# 触屏已单独处理，忽略它模拟出的鼠标事件，避免一次点按建造两次。
+	if touch_enabled and event.device == -1: return
 	if event is InputEventMouseMotion:
 		hover = cell_at(event.position)
 		if dragging: pan += event.relative
@@ -284,3 +295,51 @@ func draw_building(pos: Vector2,unit: float,id: String,angle: float):
 		else:
 			draw_line(pos-direction*r*0.25,pos+direction*r*1.35,c,maxf(2,unit*0.12),true)
 			if id == "rail": draw_line(pos-direction.orthogonal()*r*0.24,pos+direction*r*1.15-direction.orthogonal()*r*0.24,c,1,true)
+
+# 多指状态直到全部松开才清理，捏合后剩余手指也不会误触建造。
+func handle_touch(event):
+	if event is InputEventScreenTouch:
+		if event.pressed:
+			if fingers.is_empty():
+				touch_start = event.position
+				touch_moved = false
+			fingers[event.index] = event.position
+			if fingers.size() > 1: touch_moved = true
+		else:
+			var tracked = fingers.has(event.index)
+			fingers.erase(event.index)
+			if tracked and fingers.is_empty():
+				if not event.canceled and not touch_moved and event.position.distance_to(touch_start) < 12:
+					var mini = minimap_rect()
+					if mini.has_point(event.position):
+						var norm = (event.position-mini.position)/mini.size
+						zoom = maxf(zoom,1.7)
+						update_transform()
+						pan = (Vector2(0.5,0.5)-norm)*Vector2(sim.s.width,sim.s.height)*cell_size
+					else: cell_clicked.emit(cell_at(event.position),MOUSE_BUTTON_LEFT)
+				touch_moved = false
+	elif event is InputEventScreenDrag and fingers.has(event.index):
+		var old: Vector2 = fingers[event.index]
+		if fingers.size() == 1:
+			if event.position.distance_to(touch_start) >= 12: touch_moved = true
+			if touch_moved: pan += event.position-old
+			fingers[event.index] = event.position
+		else:
+			touch_moved = true
+			var before = fingers.values()
+			var old_center: Vector2 = (before[0]+before[1])*0.5
+			var old_distance: float = before[0].distance_to(before[1])
+			var anchor = (old_center-offset)/cell_size
+			fingers[event.index] = event.position
+			var after = fingers.values()
+			var center: Vector2 = (after[0]+after[1])*0.5
+			if old_distance > 1:
+				zoom = clampf(zoom*after[0].distance_to(after[1])/old_distance,0.65,8.0)
+				update_transform()
+				pan += center-point(anchor)
+		update_transform()
+
+func reset_touches():
+	fingers.clear()
+	touch_moved = false
+	dragging = false
