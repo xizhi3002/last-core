@@ -17,6 +17,10 @@ Set-Content -LiteralPath $preset -Value $config -Encoding utf8 -NoNewline
 if ($LASTEXITCODE -ne 0) { throw 'Project import failed.' }
 & $Godot --headless --path $root --script res://tests/test_simulation.gd
 if ($LASTEXITCODE -ne 0) { throw 'Simulation tests failed.' }
+& $Godot --headless --path $root --script res://tests/test_navigation.gd
+if ($LASTEXITCODE -ne 0) { throw 'Navigation tests failed.' }
+& $Godot --headless --path $root --script res://tests/test_storage.gd -- --test
+if ($LASTEXITCODE -ne 0) { throw 'Storage tests failed.' }
 & $Godot --headless --path $root --script res://tests/mobile_smoke.gd -- --mobile --test
 if ($LASTEXITCODE -ne 0) { throw 'Mobile tests failed.' }
 $apk = Join-Path $root 'build\LastCore-Android.apk'

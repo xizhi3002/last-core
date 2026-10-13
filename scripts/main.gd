@@ -30,6 +30,9 @@ var draft: Dictionary = {}
 var focused_cell = Vector2i(-1,-1)
 var draft_error = ""
 var panel_body: VBoxContainer
+var tactical_panel: PanelContainer
+var tactical_toggle: Button
+var inspect_panel_open = false
 var palette_drag = false
 var palette_start = Vector2.ZERO
 var palette_id = ""
@@ -404,6 +407,9 @@ func page_heading(root: Node,title: String,subtitle: String):
 
 # 显示五档地图的尺寸和规则，选择后进入蓝图配置。
 func show_map_select():
+	if mobile:
+		show_maps_mobile()
+		return
 	screen = "maps"
 	clear_page()
 	var root = vbox(margin_root(64,40,64,50))
@@ -428,6 +434,9 @@ func show_map_select():
 
 # 显示可携带蓝图和种子输入，准备开始新出征。
 func show_loadout():
+	if mobile:
+		show_loadout_mobile()
+		return
 	screen = "loadout"
 	clear_page()
 	var root = vbox(margin_root(80,40,80,48))
@@ -1106,7 +1115,7 @@ func show_settings():
 		rebuild.button_pressed = sim.s.auto_rebuild
 		rebuild.toggled.connect(func(v): sim.s.auto_rebuild=v)
 		body.add_child(rebuild)
-	paragraph(body,"操作：1～6 选择炮台；左键建造 / 右键拆除；Shift 框选，M 移动，Delete 拆除选中；滚轮缩放，中键拖动；C 回核心，R 路线，G 网格，E 编辑，空格暂停/开战，F11 全屏。",14)
+	if not mobile: paragraph(body,"操作：1～6 选择炮台；左键建造 / 右键拆除；Shift 框选，M 移动，Delete 拆除选中；滚轮缩放，中键拖动；C 回核心，R 路线，G 网格，E 编辑，空格暂停/开战，F11 全屏。",14)
 	paragraph(body,"波间倒计时使用实际时间；自动奖励开启后跳过商店，自动购买只买所选品类一件且受预算限制。关闭游戏不生成离线收益。",14,GOLD)
 	button(body,"保存设置",func(): store.save(); save_run(); close_modal(); paused=false,true)
 
@@ -1216,6 +1225,7 @@ func show_game_mobile():
 	screen = "game"
 	clear_page()
 	moving.clear()
+	inspect_panel_open = false
 	touch_mode = "inspect"
 	var outer = MarginContainer.new()
 	outer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -1237,12 +1247,17 @@ func show_game_mobile():
 	for n in [0.5,1.0,2.0]:
 		hud["speed"+str(n)] = compact_button(top,str(n)+"×",func(): speed=n; update_hud())
 	hud["start"] = compact_button(top,"开战",mobile_advance,true)
+	compact_button(top,"−",func(): board.zoom_by(1/1.5))
+	compact_button(top,"＋",func(): board.zoom_by(1.5))
 	compact_button(top,"全图",func(): board.home())
 	compact_button(top,"菜单",show_pause)
 	var middle = hbox(root)
 	middle.add_theme_constant_override("separation",0)
 	middle.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	tactical_toggle = compact_button(middle,"详情",func(): inspect_panel_open=true; refresh_tactical_panel())
+	tactical_toggle.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	var panel = PanelContainer.new()
+	tactical_panel = panel
 	panel.custom_minimum_size.x = 206
 	panel.add_theme_stylebox_override("panel",style(Color(0.05,0.10,0.14,0.76),Color(0.3,0.7,0.65,0.3),6))
 	middle.add_child(panel)
@@ -1369,12 +1384,16 @@ func update_draft(p: Vector2i):
 	if not sim.inside(p): draft_error = "请选择地图内的地格"
 	elif draft.kind == "remove": draft_error = "" if sim.s.buildings.has(sim.key(p)) else "此处没有建筑"
 	else:
-		var probe = Simulation.new()
-		probe.restore(sim.snapshot())
-		if draft.kind == "place": draft_error = probe.place(draft.id,p,false)
-		else: draft_error = probe.move_group([draft.source],p-draft.source)
+		draft_error = sim.deployment_error(draft.kind,draft.id,p,draft.source)
 	board.preview_valid = draft_error == ""
-	refresh_tactical_panel()
+	# 拖动只更新文字和按钮状态，保留原有控件，避免重新排版。
+	if hud.has("draft_position"):
+		hud.draft_position.text = "位置 (%d, %d)" % [p.x+1,p.y+1] if sim.inside(p) else "尚未选择位置"
+		hud.draft_status.text = draft_error if draft_error != "" else "位置有效，确认后生效"
+		hud.draft_status.add_theme_color_override("font_color",MINT if draft_error == "" else Color("f08da1"))
+		hud.draft_confirm.disabled = draft_error != ""
+		if hud.has("draft_range"): hud.draft_range.text = "射程 %.1f 格" % sim.effective_range(draft.id,p)
+
 
 func confirm_draft():
 	if draft.is_empty() or draft_error != "" or not sim.editable(): return
@@ -1387,7 +1406,7 @@ func confirm_draft():
 		draft_error = error
 		refresh_tactical_panel()
 		return
-	cancel_draft()
+	cancel_draft(false)
 	focused_cell = p
 	board.focus_cell = p
 	sound(880)
@@ -1395,29 +1414,36 @@ func confirm_draft():
 	refresh_tactical_panel()
 	update_hud()
 
-func cancel_draft():
+func cancel_draft(refresh_panel=true):
 	draft.clear()
+	focused_cell = Vector2i(-1,-1)
+	inspect_panel_open = false
 	board.preview_active = false
 	board.preview_cell = Vector2i(-1,-1)
 	board.preview_trail.clear()
 	board.focus_cell = focused_cell
-	refresh_tactical_panel()
-	update_hud()
+	if refresh_panel:
+		refresh_tactical_panel()
+		update_hud()
 
 func refresh_tactical_panel():
 	if not mobile or not is_instance_valid(panel_body): return
-	hud.erase("tower_stats")
+	var expanded = not draft.is_empty() or sim.s.buildings.has(sim.key(focused_cell)) or inspect_panel_open
+	tactical_panel.visible = expanded
+	tactical_toggle.visible = not expanded
+	for key in ["tower_stats","draft_position","draft_status","draft_confirm","draft_range"]: hud.erase(key)
 	for child in panel_body.get_children():
 		panel_body.remove_child(child)
 		child.queue_free()
 	var building = sim.s.buildings.get(sim.key(focused_cell),{})
 	var id = draft.id if not draft.is_empty() else building.get("id","")
 	if id == "":
+		compact_button(panel_body,"收起面板",func(): inspect_panel_open=false; refresh_tactical_panel())
 		small_text(panel_body,"战场指挥",MINT)
 		small_text(panel_body,"蓝图拖入战场或轻点选中，再选择地格。确认后才扣除预算。")
 		small_text(panel_body,"选择炮台可查看射程、伤害和目标优先级。")
 		small_text(panel_body,"波间可布阵；编辑后手动开战。暂停可随时使用。")
-		small_text(panel_body,"双指缩放 · 单指平移\n全图按钮恢复完整战场")
+		small_text(panel_body,"＋/− 或双指缩放\n放大后单指平移\n全图时固定视角")
 		compact_button(panel_body,"波次情报",show_wave_details)
 		compact_button(panel_body,"作战设置",show_mobile_operations)
 		return
@@ -1430,10 +1456,12 @@ func refresh_tactical_panel():
 	else: small_text(panel_body,"耐久 %d" % d.hp,MINT)
 	if not draft.is_empty():
 		var verbs = {"place":"放置","move":"移动","remove":"拆除"}
+		if d.has("range"): hud["draft_range"] = small_text(panel_body,"射程 %.1f 格" % sim.effective_range(id,draft.cell),MINT)
 		small_text(panel_body,"待确认"+verbs[draft.kind]+(" · 费用 %d" % d.cost if draft.kind == "place" else ""),GOLD)
-		small_text(panel_body,"位置 (%d, %d)" % [draft.cell.x+1,draft.cell.y+1] if sim.inside(draft.cell) else "尚未选择位置")
-		small_text(panel_body,draft_error if draft_error != "" else "位置有效，确认后生效",Color("f08da1") if draft_error != "" else MINT)
+		hud["draft_position"] = small_text(panel_body,"位置 (%d, %d)" % [draft.cell.x+1,draft.cell.y+1] if sim.inside(draft.cell) else "尚未选择位置")
+		hud["draft_status"] = small_text(panel_body,draft_error if draft_error != "" else "位置有效，确认后生效",Color("f08da1") if draft_error != "" else MINT)
 		var confirm = compact_button(panel_body,"✓ 确认"+verbs[draft.kind],confirm_draft,true)
+		hud["draft_confirm"] = confirm
 		confirm.disabled = draft_error != ""
 		compact_button(panel_body,"× 取消",cancel_draft)
 		return
@@ -1453,7 +1481,7 @@ func refresh_tactical_panel():
 		var b = compact_button(row,"移动" if kind == "move" else "拆除",func(): begin_draft(kind,id,focused_cell))
 		b.disabled = not sim.editable()
 	small_text(panel_body,"战斗中只可查看" if not sim.editable() else "波间可调整目标和位置")
-	compact_button(panel_body,"收起详情",func(): focused_cell=Vector2i(-1,-1); board.focus_cell=focused_cell; refresh_tactical_panel())
+	compact_button(panel_body,"收起详情",func(): focused_cell=Vector2i(-1,-1); board.focus_cell=focused_cell; inspect_panel_open=false; refresh_tactical_panel())
 
 func show_mobile_operations():
 	var body = modal("作战设置",700)
@@ -1461,3 +1489,68 @@ func show_mobile_operations():
 	button(body,"波次情报 / 挑战",show_wave_details)
 	button(body,"自动奖励与购买设置",show_settings)
 	button(body,"返回战场",close_modal,true)
+
+# 安卓战区选择使用固定紧凑卡片，所有选择按钮都在一屏内。
+func mobile_page_root(title: String,back: Callable) -> VBoxContainer:
+	clear_page()
+	var margin = MarginContainer.new()
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for side in ["left","right","top","bottom"]: margin.add_theme_constant_override("margin_"+side,12)
+	page.add_child(margin)
+	var root = vbox(margin)
+	root.add_theme_constant_override("separation",8)
+	var header = hbox(root)
+	compact_button(header,"← 返回",back)
+	text(header,title,23,MINT)
+	return root
+
+func show_maps_mobile():
+	screen = "maps"
+	var root = mobile_page_root("选择战区",show_menu)
+	small_text(root,"五种战区 · 独立纪录 · 出征期间地形固定")
+	var row = hbox(root)
+	row.add_theme_constant_override("separation",8)
+	for i in 5:
+		var d = sim.rules.maps[i]
+		var box = card(row)
+		box.get_parent().size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		box.get_parent().size_flags_stretch_ratio = 1
+		small_text(box,"0%d  /  战区" % (i+1),MINT)
+		text(box,d.name,19)
+		text(box,"%d × %d" % [d.width,d.height],22)
+		small_text(box,["紧凑防线","交叉火力","纵深布局","分层防守","广阔边境"][i])
+		small_text(box,"预算 %d\n障碍上限 %d" % [d.budget,d.walls],GOLD)
+		compact_button(box,"选择 →",func(): chosen_map=i; show_loadout(),true)
+	small_text(root,"每波最多三个进攻方向；每 15 波领取奖励。放大地图后可拖动观察。")
+	if not store.data.run.is_empty(): small_text(root,"已有未结束出征：开始新出征前会结算旧出征的已保存进度。",GOLD)
+
+func show_loadout_mobile():
+	screen = "loadout"
+	var root = mobile_page_root("出征蓝图 · "+sim.rules.maps[chosen_map].name,show_map_select)
+	small_text(root,"携带六种炮台；障碍和陷阱不占蓝图槽。")
+	var grid_node = GridContainer.new()
+	grid_node.columns = 4
+	root.add_child(grid_node)
+	for i in 8:
+		var d = sim.rules.towers[i]
+		var box = card(grid_node)
+		box.get_parent().size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		box.add_theme_constant_override("separation",4)
+		small_text(box,d.name+" · "+d.role,Color(d.color))
+		small_text(box,"预算 %d · 射程 %.1f" % [d.cost,d.range])
+		var unlocked = d.id in store.data.unlocked
+		var active = d.id in chosen_loadout
+		var b = compact_button(box,"已携带 ✓" if active else ("加入蓝图" if unlocked else "研究解锁"),func():
+			if d.id in chosen_loadout: chosen_loadout.erase(d.id)
+			elif chosen_loadout.size() < 6: chosen_loadout.append(d.id)
+			show_loadout())
+		b.disabled = not unlocked
+	var row = hbox(root)
+	small_text(row,"地图种子（选填）").custom_minimum_size.x = 140
+	var seed_input = LineEdit.new()
+	seed_input.placeholder_text = "留空随机"
+	seed_input.custom_minimum_size = Vector2(175,36)
+	row.add_child(seed_input)
+	small_text(row,"已携带 %d / 6" % chosen_loadout.size(),GOLD).custom_minimum_size.x = 120
+	var start = compact_button(row,"开始出征 →",func(): begin_run(seed_input.text.to_int() if seed_input.text.is_valid_int() else int(Time.get_unix_time_from_system())%2000000000),true)
+	start.disabled = chosen_loadout.size() != 6

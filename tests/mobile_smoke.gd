@@ -42,10 +42,15 @@ func run():
 	root.add_child(game)
 	game.set_process(false)
 	await snap("menu")
+	game.show_map_select();await snap("maps")
+	check_page_buttons(game.page)
+	game.show_loadout();await snap("loadout")
+	check_page_buttons(game.page)
 	game.begin_run(104729)
 	await snap("battle")
 	var b=game.board
 	check(game.speed==0.5,"slower default")
+	check(not game.tactical_panel.visible and game.tactical_toggle.visible,"empty selection panel collapsed")
 	check(b.size.y>410,"battlefield occupies most height")
 	check(game.hud.start.get_global_rect().end.x<=960,"top controls fit")
 	check(b.offset.x>=0 and b.offset.y>=0,"full map starts inside viewport")
@@ -62,6 +67,9 @@ func run():
 	var drag_event = InputEventScreenDrag.new()
 	drag_event.index=0;drag_event.position=start_pos+Vector2(0,-30)
 	root.push_input(drag_event,true)
+	await process_frame;await process_frame
+	b.update_transform()
+	target_pos=b.global_position+b.point(Vector2(target_cell)+Vector2.ONE*0.5)
 	drag_event = InputEventScreenDrag.new()
 	drag_event.index=0;drag_event.position=target_pos
 	root.push_input(drag_event,true)
@@ -71,13 +79,18 @@ func run():
 	check(not game.draft.is_empty() and game.draft.cell==target_cell,"blueprint touch drag crosses controls")
 	check(game.sim.s.buildings.is_empty(),"blueprint release requires confirmation")
 	game.cancel_draft()
+	await process_frame;await process_frame
 	b.cell_clicked.connect(func(_p,_button): taps+=1)
 	var pixel=Vector2(100,80)
 	touch(b,0,pixel,true);touch(b,0,pixel,false)
 	check(taps==1,"single tap once")
 	var old_pan=b.pan
 	touch(b,0,pixel,true);drag(b,0,pixel+Vector2(60,20));touch(b,0,pixel+Vector2(60,20),false)
-	check(taps==1 and b.pan!=old_pan,"inspect drag pans without placing")
+	check(taps==1 and b.pan==old_pan,"full map drag stays locked")
+	b.zoom_by(2.0)
+	old_pan=b.pan
+	touch(b,0,pixel,true);drag(b,0,pixel+Vector2(0,30));touch(b,0,pixel+Vector2(0,30),false)
+	check(taps==1 and b.pan!=old_pan,"zoomed drag pans without placing")
 	var old_zoom=b.zoom
 	touch(b,0,pixel,true);touch(b,1,pixel+Vector2(100,0),true)
 	drag(b,1,pixel+Vector2(160,0));touch(b,1,pixel+Vector2(160,0),false);touch(b,0,pixel,false)
@@ -94,11 +107,14 @@ func run():
 	game.begin_draft("place","rail")
 	game.update_draft(p)
 	check(game.draft_error=="","valid preview")
+	check(game.tactical_panel.visible and not game.tactical_toggle.visible,"preview expands panel")
+	check(b.zoom==1.0,"blueprint does not auto zoom")
 	check(game.sim.s.buildings.is_empty() and game.sim.s.budget==budget,"preview has no mutation")
 	check(game.sim.s.state=="edit" and game.paused,"editing while paused allowed")
 	await snap("preview")
 	game.cancel_draft()
 	check(game.sim.s.buildings.is_empty() and game.sim.s.budget==budget,"cancel preserves budget")
+	check(not game.tactical_panel.visible,"cancel collapses panel")
 	game.begin_draft("place","rail");game.update_draft(game.sim.core_cells()[0])
 	check(game.draft_error!="","core placement rejected")
 	game.confirm_draft()
@@ -125,6 +141,7 @@ func run():
 	game.begin_draft("place","wall");game.update_draft(free_cell("wall"));game.confirm_draft()
 	check(game.sim.s.buildings.size()==1,"obstacle confirmation")
 	game.start_wave();game.paused=true
+	check(not b.routes_visible(),"combat routes hidden even paused")
 	var tick=game.sim.tick
 	game._process(1.0)
 	check(game.sim.tick==tick,"pause freezes combat")
@@ -132,6 +149,10 @@ func run():
 	check(game.sim.tick>tick,"resume advances combat")
 	game._notification(Node.NOTIFICATION_APPLICATION_PAUSED)
 	check(game.paused and b.fingers.is_empty(),"background pauses and clears touch")
+	game.sim.shots.append({"life":0.13})
+	game.sim.complete_wave()
+	check(game.sim.shots.is_empty(),"wave end clears all attack effects")
+	check(b.routes_visible(),"intermission routes visible")
 	game.show_mobile_operations();await snap("operations");game.close_modal()
 	for map_id in 5:
 		game.chosen_map=map_id;game.begin_run(104729)
@@ -148,3 +169,9 @@ func run():
 	print("MOBILE TEST ",checks," checks: ",failures)
 	game.queue_free();await process_frame
 	quit(0 if failures.is_empty() else 1)
+
+func check_page_buttons(node):
+	if node is Button:
+		var rect=node.get_global_rect()
+		check(rect.position.x>=0 and rect.position.y>=0 and rect.end.x<=960 and rect.end.y<=540,"mobile page button fits: "+node.text)
+	for child in node.get_children(): check_page_buttons(child)

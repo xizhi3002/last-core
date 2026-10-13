@@ -11,6 +11,8 @@ var preview_source = Vector2i(-1,-1)
 var preview_valid = false
 var preview_trail: Array = []
 var focus_cell = Vector2i(-1,-1)
+var active_wave = -1
+var active_dirs: Array = []
 var sim
 # 手机触摸：轻点操作，单指拖动平移，双指捏合缩放；拖动结束不误建造。
 var touch_enabled = false
@@ -87,6 +89,11 @@ func jump_to(index: int):
 func update_transform():
 	if sim == null or sim.s.is_empty(): return
 	cell_size = minf((size.x-(20 if touch_enabled else 90))/sim.s.width,(size.y-(20 if touch_enabled else 70))/sim.s.height)*zoom
+	if touch_enabled:
+		if zoom <= 1.001: pan = Vector2.ZERO
+		else:
+			var extent = ((Vector2(sim.s.width,sim.s.height)*cell_size-size)*0.5+Vector2(10,10)).max(Vector2.ZERO)
+			pan = pan.clamp(-extent,extent)
 	offset = (size-Vector2(sim.s.width,sim.s.height)*cell_size)*0.5+pan
 
 # 把模拟器的棋盘坐标换算成控件内像素坐标。
@@ -182,8 +189,11 @@ func _draw():
 	if sim == null or sim.s.is_empty(): return
 	update_transform()
 	var s: Dictionary = sim.s
-	var active: Array = sim.wave_info(int(s.completed)+1).dirs
-	if show_routes:
+	if active_wave != int(s.completed)+1:
+		active_wave = int(s.completed)+1
+		active_dirs = sim.wave_info(active_wave).dirs
+	var active = active_dirs
+	if routes_visible():
 		for dir in 4:
 			if route_filter >= 0 and route_filter != dir: continue
 			if dir not in active: continue
@@ -371,7 +381,7 @@ func handle_touch(event):
 			if event.position.distance_to(touch_start) >= 12: touch_moved = true
 			if preview_active:
 				preview_changed.emit(cell_at(event.position))
-			elif touch_moved: pan += event.position-old
+			elif touch_moved and zoom > 1.001: pan += event.position-old
 			fingers[event.index] = event.position
 		else:
 			touch_moved = true
@@ -383,7 +393,7 @@ func handle_touch(event):
 			var after = fingers.values()
 			var center: Vector2 = (after[0]+after[1])*0.5
 			if old_distance > 1:
-				zoom = clampf(zoom*after[0].distance_to(after[1])/old_distance,0.65,8.0)
+				zoom = clampf(zoom*after[0].distance_to(after[1])/old_distance,1.0,8.0)
 				update_transform()
 				pan += center-point(anchor)
 		update_transform()
@@ -392,3 +402,16 @@ func reset_touches():
 	fingers.clear()
 	touch_moved = false
 	dragging = false
+
+# 以当前选中炮台为中心放大，未选中时保持视图中心。
+func zoom_by(factor: float):
+	var anchor = (size*0.5-offset)/cell_size
+	if sim.inside(preview_cell): anchor = Vector2(preview_cell)+Vector2.ONE*0.5
+	elif sim.inside(focus_cell): anchor = Vector2(focus_cell)+Vector2.ONE*0.5
+	zoom = clampf(zoom*factor,1.0,8.0)
+	update_transform()
+	pan += size*0.5-point(anchor)
+	update_transform()
+
+func routes_visible() -> bool:
+	return show_routes and sim.s.state != "battle"

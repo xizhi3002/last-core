@@ -1,6 +1,6 @@
 # 最后核心 · LAST CORE
 
-Godot 4.5.2 制作的离线塔防游戏。Android 0.3.0 支持全图战场、暂停、拖放确认与炮台射程预览；所有进度和纪录保存在本机。
+Godot 4.5.2 制作的离线塔防游戏。Android 0.4.0 支持全图战场、暂停、拖放确认与炮台射程预览；所有进度和纪录保存在本机。
 
 ## 下载与预览
 
@@ -10,7 +10,7 @@ Windows 游戏包可在 [Releases](https://github.com/xizhi3002/last-core/releas
 
 ## 开始游戏
 
-现已增加 **Android 0.3.0 离线版**：支持横屏触控、单指拖动、双指缩放和后台自动保存暂停。安装与操作、构建方式及测试范围见 [Android 说明](docs/ANDROID.md)。Windows v0.1.0 下载仍保留在原版本发布中。
+现已增加 **Android 0.4.0 离线版**：支持横屏触控、单指拖动、双指缩放和后台自动保存暂停。安装与操作、构建方式及测试范围见 [Android 说明](docs/ANDROID.md)。Windows v0.1.0 下载仍保留在原版本发布中。
 
 双击发行目录的 `LastCore.exe`，无需安装 Godot，也不依赖联网。
 
@@ -60,6 +60,7 @@ godot --headless --path . --script res://tests/test_storage.gd -- --test
 godot --headless --path . --script res://tests/ui_smoke.gd -- --test
 godot --headless --path . --script res://tests/balance.gd
 godot --headless --path . --script res://tests/mobile_smoke.gd -- --mobile --test
+godot --headless --path . --script res://tests/test_navigation.gd
 ```
 
 Windows 导出：修改 `export_presets.cfg` 的 `custom_template/release` 为本机 4.5.2 的 Windows 模板，然后执行 `godot --headless --path . --export-release "Windows Desktop" build/LastCore.exe`。开发测试需要存在可写的 build 目录。

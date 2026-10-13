@@ -19,6 +19,11 @@ var events: Array = []
 var report: Dictionary = {}
 var defs: Dictionary = {}
 var invalid_entries: Array = []
+var nav_keys: Array = []
+var nav_size = Vector2i.ZERO
+var special_signature = ""
+var special_field: Dictionary = {}
+var special_paths: Array = []
 
 # 将蓝图列表转换为按 id 查询的字典，减少战斗期间的查找工作。
 func _init():
@@ -89,23 +94,72 @@ func blocked(p: Vector2i, special = false) -> bool:
 	return false
 
 # 从核心反向广度优先搜索，分别生成普通怪与特殊怪的距离场和路线。
+# 数字索引距离场：搜索内循环不再反复创建字符串、扫描岩体数组。
+func navigation_mask(special=false) -> PackedByteArray:
+	var mask = PackedByteArray()
+	mask.resize(s.width*s.height)
+	for k in s.rocks:
+		var p = cell(k)
+		mask[p.y*s.width+p.x] = 1
+	if not special:
+		for k in s.buildings:
+			if s.buildings[k].id not in ["spike","slow"]:
+				var p = cell(k)
+				mask[p.y*s.width+p.x] = 1
+	return mask
+
+func distance_grid(mask: PackedByteArray) -> PackedInt32Array:
+	var width: int = s.width
+	var height: int = s.height
+	var distances = PackedInt32Array()
+	distances.resize(width*height)
+	distances.fill(-1)
+	var queue = PackedInt32Array()
+	queue.resize(width*height)
+	var tail = 0
+	for p in core_cells():
+		var index: int = p.y*width+p.x
+		distances[index] = 0
+		queue[tail] = index
+		tail += 1
+	var head = 0
+	while head < tail:
+		var index = queue[head]
+		head += 1
+		var x = index%width
+		var y = index/width
+		for direction in 4:
+			var nx = x+DIRS[direction].x
+			var ny = y+DIRS[direction].y
+			if nx < 0 or ny < 0 or nx >= width or ny >= height: continue
+			var next: int = ny*width+nx
+			if mask[next] == 0 and distances[next] < 0:
+				distances[next] = distances[index]+1
+				queue[tail] = next
+				tail += 1
+	return distances
+
 func rebuild_paths():
+	var dimensions = Vector2i(s.width,s.height)
+	if nav_size != dimensions:
+		nav_size = dimensions
+		nav_keys.clear()
+		for y in s.height:
+			for x in s.width: nav_keys.append(key(Vector2i(x,y)))
+	var signature = str(dimensions)+str(s.rocks)
 	fields.clear()
 	paths.clear()
 	for special in [false,true]:
+		# 特殊怪无视建筑，只有岩体或地图尺寸改变才需要重算。
+		if special and signature == special_signature:
+			fields.append(special_field)
+			paths.append(special_paths)
+			continue
+		var distances = distance_grid(navigation_mask(special))
 		var f: Dictionary = {}
-		var q = core_cells()
-		for p in q: f[key(p)] = 0
-		# 从全部核心格同时扩散；队列头索引避免每次移除首项的搬移开销。
-		var head = 0
-		while head < q.size():
-			var p: Vector2i = q[head]
-			head += 1
-			for d in DIRS:
-				var n: Vector2i = p+d
-				if not blocked(n,special) and not f.has(key(n)):
-					f[key(n)] = f[key(p)]+1
-					q.append(n)
+		for index in distances.size():
+			if distances[index] >= 0:
+				f[nav_keys[index]] = distances[index]
 		fields.append(f)
 		var all_paths: Array = []
 		for p in entrances():
@@ -114,9 +168,30 @@ func rebuild_paths():
 			while f.has(key(current)) and f[key(current)] > 0:
 				current = next_cell(current,special)
 				path.append(current)
-				if path.size() > s.width*s.height: break
 			all_paths.append(path)
 		paths.append(all_paths)
+		if special:
+			special_signature = signature
+			special_field = f
+			special_paths = all_paths
+
+# 部署预览只验证一份数字连通图，不读取文件、不复制整局、不生成路线。
+func deployment_error(kind: String,id: String,p: Vector2i,source: Vector2i) -> String:
+	if kind == "place":
+		var error = placement_error(id,p)
+		if error != "": return error
+	else:
+		if not editable() or not s.buildings.has(key(source)): return "原建筑不存在或无法编辑"
+		if not inside(p) or p in core_cells() or p in entrances() or key(p) in s.rocks or s.terrain.get(key(p),"") == "lane": return "目标区域不可用"
+		if p != source and s.buildings.has(key(p)): return "此格已有建筑"
+	if id in ["spike","slow"]: return ""
+	var mask = navigation_mask()
+	if kind == "move": mask[source.y*s.width+source.x] = 0
+	mask[p.y*s.width+p.x] = 1
+	var distances = distance_grid(mask)
+	for entry in entrances():
+		if distances[entry.y*s.width+entry.x] < 0: return "封路无效：必须保留所有入口的通路"
+	return ""
 
 # 选择距离场数值更小的相邻格；方向顺序固定，保证路线可复现。
 func next_cell(p: Vector2i, special = false) -> Vector2i:
@@ -254,7 +329,9 @@ func start_wave() -> bool:
 
 # 推进一个固定模拟步：刷怪、炮台攻击、敌人移动、漏怪和波次结束。
 func step():
-	if s.get("state","") != "battle": return
+	if s.get("state","") != "battle":
+		shots.clear()
+		return
 	tick += 1
 	spawn_clock -= STEP
 	if not wave_queue.is_empty() and spawn_clock <= 0:
@@ -427,6 +504,7 @@ func set_priority(p: Vector2i,priority: String) -> bool:
 
 # 发放本波收益、修复存活障碍，进入休整或周期领奖状态。
 func complete_wave():
+	shots.clear()
 	s.completed = s.wave
 	var earned = int((12+int(s.wave)*2)*float(rules.maps[s.map].income))
 	# 金币是本局收益账本，建造预算另行发放；避免拆建刷取永久金币。
@@ -503,6 +581,7 @@ func set_challenge(value: bool) -> bool:
 func finish(reason: String):
 	if s.state == "ended": return
 	s.state = "ended"
+	shots.clear()
 	s.reason = reason
 	command("finish",[reason])
 	events.append("ended")
